@@ -110,7 +110,8 @@ public class ControlFlowScene extends GraphScene<InputBlock, InputBlockEdge> imp
         }
 
         for (InputBlockEdge e : g.getBlockEdges()) {
-            addEdge(e);
+            if (!this.getEdges().contains(e))
+                addEdge(e);
             assert g.getBlocks().contains(e.getFrom());
             assert g.getBlocks().contains(e.getTo());
             this.setEdgeSource(e, e.getFrom());

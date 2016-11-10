@@ -212,7 +212,7 @@ public class ServerCompilerScheduler implements Scheduler {
             for (InputNode n : graph.getNodes()) {
                 if (graph.getBlock(n) == null) {
                     if (noBlock == null) {
-                        noBlock = graph.addBlock("(no block)");
+                        noBlock = graph.getNoBlock();
                         blocks.add(noBlock);
                     }
 

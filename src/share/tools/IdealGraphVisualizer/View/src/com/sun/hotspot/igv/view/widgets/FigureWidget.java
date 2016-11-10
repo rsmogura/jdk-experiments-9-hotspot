@@ -34,6 +34,7 @@ import com.sun.hotspot.igv.view.DiagramScene;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 import javax.swing.AbstractAction;
@@ -48,6 +49,7 @@ import org.netbeans.api.visual.action.WidgetAction;
 import org.netbeans.api.visual.layout.LayoutFactory;
 import org.netbeans.api.visual.model.ObjectState;
 import org.netbeans.api.visual.widget.LabelWidget;
+import org.netbeans.api.visual.widget.Scene;
 import org.netbeans.api.visual.widget.Widget;
 import org.openide.nodes.AbstractNode;
 import org.openide.nodes.Children;
@@ -348,20 +350,24 @@ public class FigureWidget extends Widget implements Properties.Provider, PopupMe
 
     @Override
     public void handleDoubleClick(Widget w, WidgetAction.WidgetMouseEvent e) {
-
+        final Set<Integer> hiddenNodes;
+        final Set<Integer> sources = this.getFigure().getSource().getSourceNodesAsSet();
+        
         if (diagramScene.isAllVisible()) {
-            final Set<Integer> hiddenNodes = new HashSet<>(diagramScene.getModel().getGraphToView().getGroup().getAllNodes());
-            hiddenNodes.removeAll(this.getFigure().getSource().getSourceNodesAsSet());
+            hiddenNodes = new HashSet<>(diagramScene.getModel().getGraphToView().getGroup().getAllNodes());
+            hiddenNodes.removeAll(sources);
             this.diagramScene.getModel().showNot(hiddenNodes);
         } else if (isBoundary()) {
-
-            final Set<Integer> hiddenNodes = new HashSet<>(diagramScene.getModel().getHiddenNodes());
-            hiddenNodes.removeAll(this.getFigure().getSource().getSourceNodesAsSet());
+            hiddenNodes = new HashSet<>(diagramScene.getModel().getHiddenNodes());
+            hiddenNodes.removeAll(sources);
             this.diagramScene.getModel().showNot(hiddenNodes);
         } else {
-            final Set<Integer> hiddenNodes = new HashSet<>(diagramScene.getModel().getHiddenNodes());
-            hiddenNodes.addAll(this.getFigure().getSource().getSourceNodesAsSet());
-            this.diagramScene.getModel().showNot(hiddenNodes);
+            hiddenNodes = new HashSet<>(diagramScene.getModel().getHiddenNodes());
+            hiddenNodes.addAll(sources);
         }
+        this.diagramScene.getModel().showNot(hiddenNodes);
+        Figure figureToCenter = getFigure();
+        if (figureToCenter != null)
+            this.diagramScene.centerFigures(Collections.singletonList(figureToCenter));
     }
 }

@@ -90,11 +90,17 @@ public class InputBlock {
     public void addNode(int id) {
         InputNode node = graph.getNode(id);
         assert node != null;
-        // nodes.contains(node) is too expensive for large graphs so
-        // just make sure the Graph doesn't know it yet.
-        assert graph.getBlock(id) == null : "duplicate : " + node;
-        graph.setBlock(node, this);
-        nodes.add(node);
+
+        InputBlock previousBlock = graph.getBlock(id);
+        if (previousBlock == null) {
+            graph.setBlock(node, this);
+            nodes.add(node);
+        }else {
+            // nodes.contains(node) is too expensive for large graphs so
+            // just make sure the Graph doesn't know it yet.
+            assert previousBlock == null || previousBlock == this: "duplicate : " + node;
+        }
+        
     }
 
     public Set<InputBlock> getSuccessors() {

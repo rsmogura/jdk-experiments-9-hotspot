@@ -69,6 +69,7 @@ import org.openide.util.lookup.InstanceContent;
  */
 public class DiagramScene extends ObjectScene implements DiagramViewer {
 
+    private final CenterFiguresSceneListener centerFiguresSceneListener = new CenterFiguresSceneListener(this);
     private CustomizablePanAction panAction;
     private WidgetAction hoverAction;
     private WidgetAction selectAction;
@@ -87,7 +88,7 @@ public class DiagramScene extends ObjectScene implements DiagramViewer {
     private DiagramViewModel modelCopy;
     private WidgetAction zoomAction;
     private boolean rebuilding;
-
+    
     /**
      * The alpha level of partially visible figures.
      */
@@ -173,14 +174,18 @@ public class DiagramScene extends ObjectScene implements DiagramViewer {
         }
     }
 
-
-    @Override
-    public void centerFigures(List<Figure> list) {
-
+    public void centerFiguresImmediately(List<Figure> list) {
         boolean b = getUndoRedoEnabled();
         setUndoRedoEnabled(false);
         gotoFigures(list);
         setUndoRedoEnabled(b);
+    }
+
+    @Override
+    public void centerFigures(List<Figure> list) {
+        centerFiguresSceneListener.setFiguresToCenter(list);
+        if (this.isValidated())
+            this.revalidate();
     }
 
     private Set<Object> getObjectsFromIdSet(Set<Object> set) {
@@ -442,6 +447,7 @@ public class DiagramScene extends ObjectScene implements DiagramViewer {
         this.setNewModel(model);
         this.setUndoRedoEnabled(b);
         this.addObjectSceneListener(selectionChangedListener, ObjectSceneEventType.OBJECT_SELECTION_CHANGED, ObjectSceneEventType.OBJECT_HIGHLIGHTING_CHANGED, ObjectSceneEventType.OBJECT_HOVER_CHANGED);
+        this.addSceneListener(centerFiguresSceneListener);
     }
 
     public DiagramViewModel getModel() {

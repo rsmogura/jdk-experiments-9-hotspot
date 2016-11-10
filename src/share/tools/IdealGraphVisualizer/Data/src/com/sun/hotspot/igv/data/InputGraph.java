@@ -32,19 +32,20 @@ import java.util.*;
 public class InputGraph extends Properties.Entity implements FolderElement {
 
     private Map<Integer, InputNode> nodes;
-    private List<InputEdge> edges;
+    private Set<InputEdge> edges;
     private Folder parent;
     private Group parentGroup;
     private Map<String, InputBlock> blocks;
-    private List<InputBlockEdge> blockEdges;
+    private Set<InputBlockEdge> blockEdges;
     private Map<Integer, InputBlock> nodeToBlock;
-
+    private InputBlock noBlock;
+    
     public InputGraph(String name) {
         setName(name);
         nodes = new LinkedHashMap<>();
-        edges = new ArrayList<>();
+        edges = new HashSet<>();
         blocks = new LinkedHashMap<>();
-        blockEdges = new ArrayList<>();
+        blockEdges = new HashSet<>();
         nodeToBlock = new LinkedHashMap<>();
     }
 
@@ -154,7 +155,6 @@ public class InputGraph extends Properties.Entity implements FolderElement {
     }
 
     public void ensureNodesInBlocks() {
-        InputBlock noBlock = null;
         Set<InputNode> scheduledNodes = new HashSet<>();
 
         for (InputBlock b : getBlocks()) {
@@ -167,10 +167,7 @@ public class InputGraph extends Properties.Entity implements FolderElement {
         for (InputNode n : this.getNodes()) {
             assert nodes.get(n.getId()) == n;
             if (!scheduledNodes.contains(n)) {
-                if (noBlock == null) {
-                    noBlock = this.addBlock("(no block)");
-                }
-                noBlock.addNode(n.getId());
+                getNoBlock().addNode(n.getId());
             }
             assert this.getBlock(n) != null;
         }
@@ -232,7 +229,7 @@ public class InputGraph extends Properties.Entity implements FolderElement {
     }
 
     public Collection<InputEdge> getEdges() {
-        return Collections.unmodifiableList(edges);
+        return Collections.unmodifiableSet(edges);
     }
 
     public void removeEdge(InputEdge c) {
@@ -275,13 +272,24 @@ public class InputGraph extends Properties.Entity implements FolderElement {
         blocks.put(b.getName(), b);
         return b;
     }
+    
+    /** Returns artifical block for nodes without block.
+     * 
+     * @return artifical block for nodes without block
+     */
+    public InputBlock getNoBlock() {
+        if (noBlock == null) {
+            noBlock = this.addBlock("(no block)");
+        }
+        return noBlock;
+    }
 
     public InputBlock getBlock(String s) {
         return blocks.get(s);
     }
 
     public Collection<InputBlockEdge> getBlockEdges() {
-        return Collections.unmodifiableList(blockEdges);
+        return Collections.unmodifiableSet(blockEdges);
     }
 
     @Override

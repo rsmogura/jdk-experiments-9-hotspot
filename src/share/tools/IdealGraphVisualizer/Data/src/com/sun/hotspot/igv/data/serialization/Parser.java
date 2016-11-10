@@ -255,14 +255,9 @@ public class Parser implements GraphParser {
                 } else {
                     // Blocks and their nodes defined: add other nodes to an
                     //  artificial "no block" block
-                    InputBlock noBlock = null;
                     for (InputNode n : graph.getNodes()) {
                         if (graph.getBlock(n) == null) {
-                            if (noBlock == null) {
-                                noBlock = graph.addBlock("(no block)");
-                            }
-
-                            noBlock.addNode(n.getId());
+                            graph.getNoBlock().addNode(n.getId());
                         }
 
                         assert graph.getBlock(n) != null;
