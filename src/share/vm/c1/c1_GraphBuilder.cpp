@@ -28,10 +28,12 @@
 #include "c1/c1_Compilation.hpp"
 #include "c1/c1_GraphBuilder.hpp"
 #include "c1/c1_InstructionPrinter.hpp"
+#include "c1/c1_BufferSizePredictor.hpp"
 #include "ci/ciCallSite.hpp"
 #include "ci/ciField.hpp"
 #include "ci/ciKlass.hpp"
 #include "ci/ciMemberName.hpp"
+#include "ci/bcEscapeAnalyzer.hpp"
 #include "compiler/compileBroker.hpp"
 #include "interpreter/bytecode.hpp"
 #include "memory/resourceArea.hpp"
@@ -40,6 +42,7 @@
 #include "runtime/compilationPolicy.hpp"
 #include "runtime/vm_version.hpp"
 #include "utilities/bitMap.inline.hpp"
+#include "opto/block.hpp"
 
 class BlockListBuilder VALUE_OBJ_CLASS_SPEC {
  private:
@@ -1570,6 +1573,13 @@ void GraphBuilder::method_return(Value x, bool ignore_return) {
   append(new Return(x));
 }
 
+Value GraphBuilder::get_receiver(ciMethod* target) {
+  assert(target->is_loaded() && !target->is_static(), "sanity");
+
+  int index = state()->stack_size() - (target->arg_size_no_receiver() + 1);
+  return state()->stack_at(index);
+}
+
 Value GraphBuilder::make_constant(ciConstant field_value, ciField* field) {
   if (!field_value.is_valid())  return NULL;
 
@@ -1791,6 +1801,87 @@ Values* GraphBuilder::collect_args_for_profiling(Values* args, ciMethod* target,
   return obj_args;
 }
 
+bool GraphBuilder::record_finish_meth_for_buffer_profiling(ciMethod *target) {
+  assert(buffer_size_predictor()->is_profiled_class_finish_meth(target)
+    && profile_buffer_size(), "Caller should check");
+
+  Value receiver = get_receiver(target);
+  NewInstance* topmost_alloc = FindAllocationVisitor::find_allocation(receiver);
+
+  if (topmost_alloc == NULL) {
+    return false;
+  }else {
+    bool status = buffer_size_predictor()->add_finish_point(topmost_alloc, method(), bci());
+    method()->ensure_method_data();
+    CompileLog* log = compilation()->log();
+    if (log) {
+      log->begin_elem("In method ");            method()->print_name(log);
+      log->print(" from compilation of ");      compilation()->method()->print_name(log);
+      log->print(" found buffer terminating method at bci %d . Call has", bci());
+      if (!status)
+        log->print(" not ");
+      log->print("been added to BufferSizePredictor\n");
+      log->end_elem();
+    }
+    return status;
+  }
+}
+
+bool GraphBuilder::can_profile_constructor_for_buffer_size(ciMethod* target) {
+	if (!profile_buffer_size())
+		return false;
+
+	// The profiling takes places inside default constructors which for well known JDK classes just calls int constructor
+  // this method actually doesn't check callee, but checks caller...
+	if (stream()->cur_bc_raw() != Bytecodes::_invokespecial)
+		return false;
+	if (scope()->is_top_scope())
+		return false;
+
+  return buffer_size_predictor()->is_profiled_class_initializer(scope()->method());
+}
+
+bool GraphBuilder::record_constructor_for_buffer_profiling(ciMethod* target) {
+	assert(PredictBufferSize, "Should size profiling be turned on");
+	assert(can_profile_constructor_for_buffer_size(target), "Should be called on checked invocation targets");
+
+  // Right now we don't check what is actually called, but who calls it
+	vmIntrinsics::ID curr_id = scope()->method()->intrinsic_id();
+
+  // Get default size
+  Constant* size_const = ipop()->as_Constant();
+  assert(size_const && size_const->type()->as_IntConstant(), "Should be a constant (JDK changed?)");
+	const jint size_value = size_const->type()->as_IntConstant()->value();
+
+#ifdef ASSERT
+  int expected_size = buffer_size_predictor()->expected_size_for_initializer(scope()->method());
+  assert(size_value == expected_size,
+         "Should be an integer constant of size %d, but is %d (JDK changed?)", expected_size, size_value);
+#endif
+
+	// Duplicate node
+	IntConstant* dup_size = new IntConstant(size_value);
+  Constant* dup_const = new Constant(dup_size);
+  dup_const->set_printable_bci(size_const->printable_bci());
+
+  // Append & ensure duplicate has not been de-duplicated
+	Instruction* appended = append_with_bci(dup_const, bci(), true);
+	assert(appended == dup_const && appended->as_Constant()->type() == dup_size,
+         "Should not be replaced, it's subject to substitution by profiled value");
+	ipush(dup_const);
+
+  NewInstance* allocated = scope_data()->receiver()->as_NewInstance();
+	assert(allocated, "What? Byte code manipulated java.base?");
+
+	if (!allocated)
+		return false;
+
+	// Record value, so later profiler will know where to start, and what should be changed
+	C1_BufferSizePredictor::InjectionPoint* injection_pt =
+					compilation()->buffer_size_predictor()->add_injection_point(allocated, dup_const);
+	DEBUG_ONLY(injection_pt->set_optimised_method(scope()->caller()->method()));
+	return true;
+}
 
 void GraphBuilder::invoke(Bytecodes::Code code) {
   bool will_link;
@@ -1806,6 +1897,36 @@ void GraphBuilder::invoke(Bytecodes::Code code) {
   bool is_resolved = true;
   if (klass->is_loaded() && !target->is_loaded()) {
     is_resolved = false; // method not found
+  }
+
+  if (klass->is_loaded() && target->is_loaded() && is_profiling() && profile_buffer_size()) {
+
+    // Check if it's constructor of StringBuffers, StringBuilder, ByteArrayOutStream,
+    // CharArrayWriters, or other supported class which can be used to optimise buffer stats
+    if (can_profile_constructor_for_buffer_size(target)) {
+	    record_constructor_for_buffer_profiling(target);
+
+    }else if (buffer_size_predictor()->is_profiled_class_finish_meth(target)) {
+      // It's finish method (toString, and so) so it should contain and produce statistics
+      int added_for_stats = record_finish_meth_for_buffer_profiling(target);
+
+      // If stats has been found that means we've found corresponding allocation (shared point)
+      // If stats has not been added, than no injection point has been found, it can mean
+      // (1) buffer class was not allocated in scope, or (2) default constructor was not inlined
+      // We check receiver again if it is local allocation, if so method will be profiled for buffer
+      // stats, so maybe later someone else will have more luck.
+      // Otherwise, there is no need to add profiling code, as stats will not be used in future
+      Value recv = get_receiver(target);
+      if (!added_for_stats)
+        added_for_stats = FindAllocationVisitor::find_allocation(recv) != NULL;
+
+      if (added_for_stats) {
+        // Fine let's profile
+        profile_buffer_finish_method(recv, target);
+        if (method()->method_data_or_null())
+          method()->method_data_or_null()->set_would_profile(true);
+      }
+    }
   }
 
   // check if CHA possible: if so, change the code to invoke_special
@@ -1864,8 +1985,7 @@ void GraphBuilder::invoke(Bytecodes::Code code) {
     bool type_is_exact = false;
     // try to find a precise receiver type
     if (will_link && !target->is_static()) {
-      int index = state()->stack_size() - (target->arg_size_no_receiver() + 1);
-      receiver = state()->stack_at(index);
+      receiver = get_receiver(target);
       ciType* type = receiver->exact_type();
       if (type != NULL && type->is_loaded() &&
           type->is_instance_klass() && !type->as_instance_klass()->is_interface()) {
@@ -2240,7 +2360,7 @@ Value GraphBuilder::round_fp(Value fp_value) {
 }
 
 
-Instruction* GraphBuilder::append_with_bci(Instruction* instr, int bci) {
+Instruction* GraphBuilder::append_with_bci(Instruction* instr, int bci, bool skipValueNumbering) {
   Canonicalizer canon(compilation(), instr, bci);
   Instruction* i1 = canon.canonical();
   if (i1->is_linked() || !i1->can_be_linked()) {
@@ -2249,7 +2369,7 @@ Instruction* GraphBuilder::append_with_bci(Instruction* instr, int bci) {
     return i1;
   }
 
-  if (UseLocalValueNumbering) {
+  if (UseLocalValueNumbering && !skipValueNumbering) {
     // Lookup the instruction in the ValueMap and add it to the map if
     // it's not found.
     Instruction* i2 = vmap()->find_insert(i1);
@@ -3833,7 +3953,7 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
   int continuation_preds = cont->number_of_preds();
 
   // Push callee scope
-  push_scope(callee, cont);
+  push_scope(callee, recv, cont);
 
   // the BlockListBuilder for the callee could have bailed out
   if (bailed_out())
@@ -4085,7 +4205,11 @@ void GraphBuilder::push_root_scope(IRScope* scope, BlockList* bci2block, BlockBe
 }
 
 
-void GraphBuilder::push_scope(ciMethod* callee, BlockBegin* continuation) {
+void GraphBuilder::push_scope(ciMethod* callee, Value receiver, BlockBegin* continuation) {
+  assert(receiver == NULL || receiver->declared_type() == NULL ||
+    receiver->declared_type()->is_object() || receiver->declared_type()->is_klass(),
+    "Receiver must be an object or klass");
+
   IRScope* callee_scope = new IRScope(compilation(), scope(), bci(), callee, -1, false);
   scope()->add_callee(callee_scope);
 
@@ -4104,6 +4228,7 @@ void GraphBuilder::push_scope(ciMethod* callee, BlockBegin* continuation) {
   data->set_scope(callee_scope);
   data->set_bci2block(blb.bci2block());
   data->set_continuation(continuation);
+  data->set_receiver(receiver);
   _scope_data = data;
 }
 
@@ -4304,6 +4429,74 @@ void GraphBuilder::print_stats() {
   vmap()->print();
 }
 #endif // PRODUCT
+
+void GraphBuilder::FindAllocationVisitor::do_Invoke(Invoke *x) {
+  ciMethod* target = x->target();
+  if (!target->is_loaded())
+    return;
+
+	if (x->code() != Bytecodes::_invokestatic && x->code() != Bytecodes::_invokespecial) {
+    // Graph builder should mark target->is_final_method() as _invokespecial, but not always
+		return;
+	}
+
+	// The exact method is called, check bcea
+  BCEscapeAnalyzer* bcea = target->get_bcea();
+  if (bcea == NULL)
+    return;
+
+  bool has_receiver = x->receiver() != NULL;
+  bool arg_offset = has_receiver ? 1 : 0;
+  int  args_count = x->number_of_arguments() + arg_offset;
+
+  for (int i=0; i < args_count; i++) {
+    if (bcea->is_arg_returned(i)) {
+      Instruction* arg;
+      if (i == 0 && has_receiver) {
+        arg = x->receiver();
+      }else {
+        arg = x->argument_at(i - arg_offset);
+      }
+      arg->visit(this);
+      break;
+    }
+  }
+}
+
+void GraphBuilder::FindAllocationVisitor::do_NewInstance(NewInstance *x) {
+  this->_found = x;
+}
+
+void GraphBuilder::FindAllocationVisitor::do_CheckCast(CheckCast *x) {
+  x->obj()->visit(this);
+}
+
+void GraphBuilder::profile_buffer_finish_method(Value receiver, ciMethod *target) {
+  assert(target->is_loaded() && target->holder()->is_loaded(), "sanity");
+  CompileLog* log = compilation()->log();
+
+  ciField* size_field = NULL;
+  // TODO Extract all those switches to some nice macro
+  switch(target->intrinsic_id()) {
+    case vmIntrinsics::_StringBuilder_toString:
+    case vmIntrinsics::_StringBuffer_toString:
+    case vmIntrinsics::_ByteArrayOutputStream_toByteArray:
+    case vmIntrinsics::_CharArrayWriter_toCharArray:
+      size_field = target->holder()->get_field_by_name(ciSymbol::count_name(), ciSymbol::int_signature(), false);
+      assert(size_field, "Can't find field (JDK change?)");
+      break;
+    default:
+      ShouldNotReachHere();
+  }
+  LoadField* size_load = new LoadField(receiver, size_field->offset(), size_field, false, copy_state_before(), false);
+  append(size_load);
+
+  assert(!method()->ensure_method_data() || method()->method_data()->bci_to_aux_data(bci(), DataLayout::average_data_tag),
+    "Should have average data at bci %d", bci());
+
+  ProfileAverageData *profile = new ProfileAverageData(method(), bci(), size_load);
+  append(profile);
+}
 
 void GraphBuilder::profile_call(ciMethod* callee, Value recv, ciKlass* known_holder, Values* obj_args, bool inlined) {
   assert(known_holder == NULL || (known_holder->is_instance_klass() &&

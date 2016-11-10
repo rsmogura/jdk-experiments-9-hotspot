@@ -60,6 +60,7 @@ inline narrowKlass Klass::encode_klass(Klass* v) {
 }
 
 inline Klass* Klass::decode_klass_not_null(narrowKlass v) {
+  if (is_null(v))
   assert(!is_null(v), "narrow klass value can never be zero");
   int    shift = Universe::narrow_klass_shift();
   Klass* result = (Klass*)(void*)((uintptr_t)Universe::narrow_klass_base() + ((uintptr_t)v << shift));

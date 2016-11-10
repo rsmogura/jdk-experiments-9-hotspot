@@ -74,7 +74,7 @@ static jint get_properties(AttachOperation* op, outputStream* out, Symbol* seria
   JavaCallArguments args;
 
 
-  Symbol* signature = vmSymbols::serializePropertiesToByteArray_signature();
+  Symbol* signature = vmSymbols::void_bytearray_signature();
   JavaCalls::call_static(&result,
                            ik,
                            serializePropertiesMethod,

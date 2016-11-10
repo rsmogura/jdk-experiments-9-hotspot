@@ -99,6 +99,7 @@ oop         SystemDictionary::_system_loader_lock_obj     =  NULL;
 
 InstanceKlass*      SystemDictionary::_well_known_klasses[SystemDictionary::WKID_LIMIT]
                                                           =  { NULL /*, NULL...*/ };
+int                 SystemDictionary::_well_known_field_offsets[SystemDictionary::WOID_LIMIT] = { 0 };
 
 InstanceKlass*      SystemDictionary::_box_klasses[T_VOID+1]      =  { NULL /*, NULL...*/ };
 
@@ -2052,6 +2053,23 @@ static const short wk_init_info[] = {
   0
 };
 
+void SystemDictionary::update_well_known_offsets(WKID klass_id, InstanceKlass* klass) {
+  fieldDescriptor fd;
+  int offset = 0;
+
+   #define WKO_OFFSET_UPDATE(name, wk_klass_id, field_symbol, field_signature) \
+   if (klass_id == WK_KLASS_ENUM_NAME(wk_klass_id)) { \
+	  Klass* owner = klass->find_field(vmSymbols::field_symbol(), vmSymbols::field_signature(), &fd); \
+    if (owner) { \
+       WKO_ID id = WK_OFFSETS_ENUM_NAME(name); \
+       assert(_well_known_field_offsets[id] == 0 || _well_known_field_offsets[id] == fd.offset(), "Should not change"); \
+	   _well_known_field_offsets[id] = fd.offset(); \
+    } \
+   }
+
+   WK_OFFSETS_DO(WKO_OFFSET_UPDATE)
+   #undef WKO_OFFSET_UPDATE
+}
 bool SystemDictionary::initialize_wk_klass(WKID id, int init_opt, TRAPS) {
   assert(id >= (int)FIRST_WKID && id < (int)WKID_LIMIT, "oob");
   int  info = wk_init_info[id - FIRST_WKID];
@@ -2077,7 +2095,13 @@ bool SystemDictionary::initialize_wk_klass(WKID id, int init_opt, TRAPS) {
     } else {
       k = resolve_or_null(symbol,       CHECK_0); // load optional klass
     }
-    (*klassp) = (k == NULL) ? NULL : InstanceKlass::cast(k);
+    if (k == NULL) {
+      (*klassp) = NULL;
+    }else {
+      InstanceKlass* klass = InstanceKlass::cast(k);
+      SystemDictionary::update_well_known_offsets(id, klass);
+      (*klassp) = klass;
+    }
   }
   return ((*klassp) != NULL);
 }
@@ -2903,4 +2927,68 @@ const char* SystemDictionary::loader_name(const oop loader) {
 const char* SystemDictionary::loader_name(const ClassLoaderData* loader_data) {
   return (loader_data->class_loader() == NULL ? "<bootloader>" :
     InstanceKlass::cast((loader_data->class_loader())->klass())->name()->as_C_string());
+}
+
+vmBufferProfiledClass vmBufferProfiledClass::_profiled_classes[4];
+int   vmBufferProfiledClass::_profiled_classes_count = 0; // Mark as zero
+
+vmBufferProfiledClass::vmBufferProfiledClass(vmIntrinsics::ID default_init_id,
+                                             vmIntrinsics::ID terminating_method,
+                                             InstanceKlass** klass_addr,
+                                             int* size_offset_addr,
+                                             int _default_buffer_size) :
+        _default_init_id(default_init_id),
+        _terminating_method(terminating_method),
+        _klass_addr(klass_addr),
+        _size_addr(size_offset_addr),
+        _default_buffer_size(_default_buffer_size) {
+}
+
+void vmBufferProfiledClass::initialize() {
+  assert(_profiled_classes_count == 0, "Should be called only once");
+  int i = 0;
+  _profiled_classes[i++] = vmBufferProfiledClass(
+          vmIntrinsics::_StringBuilder_void,
+          vmIntrinsics::_StringBuilder_toString,
+          SystemDictionary::StringBuilder_klass_addr(),
+          SystemDictionary::StringBuilder_count_addr(),
+          16);
+  _profiled_classes[i++] = vmBufferProfiledClass(
+          vmIntrinsics::_StringBuffer_void,
+          vmIntrinsics::_StringBuffer_toString,
+          SystemDictionary::StringBuffer_klass_addr(),
+          SystemDictionary::StringBuffer_count_addr(),
+          16);
+  _profiled_classes[i++] = vmBufferProfiledClass(
+          vmIntrinsics::_ByteArrayOutputStream_void,
+          vmIntrinsics::_ByteArrayOutputStream_toByteArray,
+          SystemDictionary::ByteArrayOutputStream_klass_addr(),
+          SystemDictionary::ByteArrayOutputStream_count_addr(),
+          32);
+  _profiled_classes[i++] = vmBufferProfiledClass(
+          vmIntrinsics::_CharArrayWriter_void,
+          vmIntrinsics::_CharArrayWriter_toCharArray,
+          SystemDictionary::CharArrayWriter_klass_addr(),
+          SystemDictionary::CharArrayWriter_count_addr(),
+          32);
+
+  vmBufferProfiledClass::_profiled_classes_count = i;
+};
+
+vmBufferProfiledClass* vmBufferProfiledClass::profiled_class_by_initializer(vmIntrinsics::ID id) {
+  for (int i=0, classes = vmBufferProfiledClass::_profiled_classes_count; i < classes; i++) {
+    vmBufferProfiledClass *profiled_class = &vmBufferProfiledClass::_profiled_classes[i];
+    if (profiled_class->default_initializer_id() == id)
+      return profiled_class;
+  }
+  return NULL;
+}
+
+vmBufferProfiledClass* vmBufferProfiledClass::profiled_class_by_finish_meth(vmIntrinsics::ID id) {
+  for (int i=0, classes = vmBufferProfiledClass::_profiled_classes_count; i < classes; i++) {
+    vmBufferProfiledClass *profiled_class = &vmBufferProfiledClass::_profiled_classes[i];
+    if (profiled_class->terminating_method_id() == id)
+      return profiled_class;
+  }
+  return NULL;
 }

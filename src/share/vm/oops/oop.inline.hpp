@@ -249,6 +249,8 @@ int oopDesc::size_given_klass(Klass* klass)  {
       size_t array_length = (size_t) ((arrayOop)this)->length();
       size_in_bytes = array_length << Klass::layout_helper_log2_element_size(lh);
 #endif
+			if (array_length == 5078)
+        array_length = 5078;
       size_in_bytes += Klass::layout_helper_header_size(lh);
 
       // This code could be simplified, but by keeping array_header_in_bytes

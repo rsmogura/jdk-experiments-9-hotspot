@@ -117,6 +117,7 @@ jint init_globals() {
     return status;
 
   CodeCacheExtensions::complete_step(CodeCacheExtensionsSteps::Universe);
+  vmBufferProfiledClass::initialize(); // before templates are generated
   interpreter_init();  // before any methods loaded
   CodeCacheExtensions::complete_step(CodeCacheExtensionsSteps::Interpreter);
   invocationCounter_init();  // before any methods loaded

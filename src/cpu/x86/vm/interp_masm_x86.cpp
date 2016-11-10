@@ -37,6 +37,7 @@
 #include "runtime/biasedLocking.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/thread.inline.hpp"
+#include "assembler_x86.hpp"
 
 // Implementation of InterpreterMacroAssembler
 
@@ -87,6 +88,137 @@ void InterpreterMacroAssembler::profile_obj_type(Register obj, const Address& md
   movptr(mdo_addr, obj);
 
   bind(next);
+}
+
+void InterpreterMacroAssembler::profile_average_stats(Register mdp, Register receiver) {
+  if (!ProfileInterpreter || !PredictBufferSize)
+    return;
+
+  assert_different_registers(mdp, receiver, rbx);
+  assert_different_registers(receiver, rdx, rax, rbx);
+
+  Label profile_continue; // When no profiling at all
+  Label update_mdp;       // When average data cn't be profiled
+
+  test_method_data_pointer(mdp, profile_continue);
+
+  // Check if avg data available
+  cmpb(Address(mdp, in_bytes(DataLayout::tag_offset())), DataLayout::average_data_tag);
+  jcc(Assembler::notEqual, profile_continue);
+
+  // Only x64 is supported
+#ifdef _LP64
+  bool swap_rax_mdp = (mdp == rax);
+  push(rbx);
+  push(rdx); // RDX may contain MDP
+
+  if (swap_rax_mdp) {
+    movptr(rdx, mdp);
+    mdp = rdx;
+  }else {
+    push(rax);
+  }
+  // The RAX and RBX are free for operation, RDX may be MDP
+
+  // Increase counter and check for overflow
+  Address avg_count_addr = Address(mdp, in_bytes(AverageData::avg_count_offset()));
+  movl(rbx, avg_count_addr);
+  increment(rbx);
+  //cmpl(rbx, max_juint );
+  //jcc(Assembler::equal, update_mdp); // Counter overflow
+  movl(avg_count_addr, rbx);         // If not overflow store val
+  // It's rather impossible not to have values set under *_klass_addr and *_cont_addr, so
+  // don't care about no-effect counter increase
+
+//  DEV KEPT TO TRY MACRO, OR CLASS APPROACH
+//  #define STATS_GEN(x0, klass_addr, x1, x2, term_name, x3, size_addr, x4, x5, x6) {  \
+//    Label next_jmp;                                                                  \
+//    increase_stats_from_int_field(rbx, receiver, rbx, mdp,                           \
+//                                klass_addr, size_addr,                               \
+//                                update_mdp, update_mdp);                             \
+//  }
+//  VM_BUFFER_PROFILED_CLASSES_DO(STATS_GEN)
+//  #undef STATS_GEN
+
+
+  // TODO String builders should be profiled with encoder to limit bytes
+  //      Version of stats without binding error label could help
+
+  for (int i=0, classes = vmBufferProfiledClass::profiled_classes_count(); i < classes; i++) {
+    Label next_class;
+    vmBufferProfiledClass* profiled_class = vmBufferProfiledClass::profiled_class_at(i);
+    increase_stats_from_int_field(rbx, receiver, rbx, mdp,
+                                  profiled_class->klass_addr(), profiled_class->size_addr(),
+                                  update_mdp, update_mdp);
+  }
+
+
+  // Right now every method having AverageData should be profiled
+  should_not_reach_here();
+
+  bind(update_mdp);
+
+  // Restore registers
+  if (swap_rax_mdp) {
+    movptr(rax, mdp);
+    mdp = rax;
+  }else {
+    pop(rax);
+  }
+  pop(rdx);
+  pop(rbx);
+#endif
+  update_mdp_by_constant(mdp, in_bytes(AverageData::static_size_in_bytes()));
+
+  bind(profile_continue);
+}
+
+void InterpreterMacroAssembler::increase_stats_from_int_field(Register field_val_dest,
+                                                              Register obj, Register field_offset_addr,
+                                                              Register mdp,
+                                                              InstanceKlass** klass_addr,
+                                                              int* offset_addr,
+                                                              Label& no_offset_jmp,
+                                                              Label& success_label) {
+	Label wrong_klass_jmp, val_not_greater;
+  assert_different_registers(mdp, obj, field_offset_addr);
+
+  load_well_known_offset(field_val_dest,
+                         obj,
+                         klass_addr,
+                         offset_addr,
+                         wrong_klass_jmp,
+                         no_offset_jmp);
+
+  movl(field_val_dest, Address(obj, field_val_dest));
+
+  // Add to sum
+  addq(Address(mdp, AverageData::avg_sum_offset()), field_val_dest);
+
+  // Set maximum value
+  cmpl(field_val_dest, Address(mdp, AverageData::avg_max_offset()));
+  jcc(Assembler::lessEqual, val_not_greater);
+  movl(Address(mdp, AverageData::avg_max_offset()), field_val_dest);
+  bind(val_not_greater);
+
+  // TODO Maybe sum( (avg - current)^2)?
+  jmp(success_label);
+
+	// Finish with this class
+  bind(wrong_klass_jmp);
+}
+
+void InterpreterMacroAssembler::load_well_known_offset(Register dest, Register obj, InstanceKlass** klass_addr,
+                                                       int* offset_addr,
+                                                       Label& wrong_klass_jmp,
+                                                       Label& no_offset_jmp) {
+  load_klass(dest, obj);
+  cmpptr(dest, ExternalAddress((address) klass_addr));
+  jcc(Assembler::notEqual, wrong_klass_jmp);
+
+  mov32(dest, ExternalAddress((address) offset_addr));
+  testl(dest, dest);
+  jcc(Assembler::zero, no_offset_jmp); // Offset may not be loaded
 }
 
 void InterpreterMacroAssembler::profile_arguments_type(Register mdp, Register callee, Register tmp, bool is_virtual) {

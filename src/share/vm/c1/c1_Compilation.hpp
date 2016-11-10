@@ -51,6 +51,7 @@ class ValueStack;
 class LIR_OprDesc;
 class C1_MacroAssembler;
 class CFGPrinter;
+class C1_BufferSizePredictor;
 typedef LIR_OprDesc* LIR_Opr;
 
 typedef GrowableArray<BasicType> BasicTypeArray;
@@ -84,6 +85,7 @@ class Compilation: public StackObj {
   ExceptionInfoList* _exception_info_list;
   ExceptionHandlerTable _exception_handler_table;
   ImplicitExceptionTable _implicit_exception_table;
+  C1_BufferSizePredictor* _buffer_size_predictor;
   LinearScan*        _allocator;
   CodeOffsets        _offsets;
   CodeBuffer         _code;
@@ -146,6 +148,7 @@ class Compilation: public StackObj {
   CodeOffsets* offsets()                         { return &_offsets; }
   Arena* arena()                                 { return _arena; }
   bool has_access_indexed()                      { return _has_access_indexed; }
+  C1_BufferSizePredictor* buffer_size_predictor(){ return _buffer_size_predictor; }
 
   // Instruction ids
   int get_next_id()                              { return _next_id++; }
@@ -249,6 +252,10 @@ class Compilation: public StackObj {
   bool profile_return() {
     return env()->comp_level() == CompLevel_full_profile &&
       C1UpdateMethodData && MethodData::profile_return();
+  }
+  bool profile_buffer_size() {
+    return env()->comp_level() == CompLevel_full_profile &&
+        PredictBufferSize;
   }
   bool age_code() const {
     return _method->profile_aging();

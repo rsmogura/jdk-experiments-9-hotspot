@@ -38,6 +38,7 @@
 #include "runtime/handles.inline.hpp"
 #include "runtime/orderAccess.inline.hpp"
 #include "utilities/copy.hpp"
+#include "c1/c1_Instruction.hpp"
 
 // ==================================================================
 // DataLayout
@@ -116,7 +117,12 @@ char* ProfileData::print_data_on_helper(const MethodData* md) const {
 }
 
 void ProfileData::print_data_on(outputStream* st, const MethodData* md) const {
-  print_data_on(st, print_data_on_helper(md));
+  const u1 tag = ((DataLayout*) data())->tag();
+  if (DataLayout::no_tag < tag && tag < DataLayout::__closing_data_tag) {
+    print_data_on(st, print_data_on_helper(md));
+  }else {
+    st->print("unexpected tag %hhu", tag);
+  }
 }
 
 void ProfileData::print_shared(outputStream* st, const char* name, const char* extra) const {
@@ -742,6 +748,7 @@ int MethodData::bytecode_cell_count(Bytecodes::Code code) {
   case Bytecodes::_jsr_w:
     return JumpData::static_cell_count();
   case Bytecodes::_invokevirtual:
+    return aux_data_profile;
   case Bytecodes::_invokeinterface:
     if (MethodData::profile_arguments() || MethodData::profile_return()) {
       return variable_cell_count;
@@ -781,14 +788,46 @@ int MethodData::bytecode_cell_count(Bytecodes::Code code) {
 #endif
 }
 
+bool MethodData::stream_can_profile_buffer(BytecodeStream* stream) {
+  assert(PredictBufferSize, "Should be enabled");
+  int const_pool_idx = stream->get_index_u2_cpcache();
+
+  Symbol* klass_sym = stream->method()->constants()->klass_ref_at_noresolve(const_pool_idx);
+  Symbol* methodName = stream->method()->constants()->name_ref_at(const_pool_idx);
+  Symbol* signature = stream->method()->constants()->signature_ref_at(const_pool_idx);
+
+  return can_profile_buffer(klass_sym, methodName, signature);
+}
+
+int MethodData::compute_aux_data_size(BytecodeStream* stream) {
+  assert(bytecode_cell_count(stream->code()) == aux_data_profile, "Designed for optional profiles");
+  int aux_data_size = 0;
+
+  switch(stream->code()) {
+    default:
+      ShouldNotReachHere();
+      return 0;
+    case Bytecodes::_invokevirtual:
+      if (PredictBufferSize && stream_can_profile_buffer(stream)) {
+        aux_data_size += DataLayout::compute_size_in_bytes(AverageData::static_cell_count());
+      }
+  }
+
+  return aux_data_size;
+}
+
 // Compute the size of the profiling information corresponding to
 // the current bytecode.
 int MethodData::compute_data_size(BytecodeStream* stream) {
-  int cell_count = bytecode_cell_count(stream->code());
-  if (cell_count == no_profile_data) {
+  const int profile_cell_count = bytecode_cell_count(stream->code());
+  if (profile_cell_count == no_profile_data) {
     return 0;
   }
-  if (cell_count == variable_cell_count) {
+
+  NOT_PRODUCT(int _assert_bci_change = stream->bci());
+
+  int cell_count;
+  if (profile_cell_count == variable_cell_count || profile_cell_count == aux_data_profile) {
     switch (stream->code()) {
     case Bytecodes::_lookupswitch:
     case Bytecodes::_tableswitch:
@@ -817,13 +856,26 @@ int MethodData::compute_data_size(BytecodeStream* stream) {
       break;
     }
     default:
+      // This line may not be valid if only aux data are in composite profile
       fatal("unexpected bytecode for var length profile data");
     }
+  }else {
+    cell_count = profile_cell_count;
   }
+
+  int aux_data_size = 0;
+
+  if (profile_cell_count == aux_data_profile) {
+    aux_data_size = compute_aux_data_size(stream);
+  }
+  
+  assert(_assert_bci_change == stream->bci(), "Stream should not change");
   // Note:  cell_count might be zero, meaning that there is just
   //        a DataLayout header, with no extra cells.
   assert(cell_count >= 0, "sanity");
-  return DataLayout::compute_size_in_bytes(cell_count);
+  assert(aux_data_size >= 0, "sanity");
+
+  return DataLayout::compute_size_in_bytes(cell_count) + aux_data_size;
 }
 
 bool MethodData::is_speculative_trap_bytecode(Bytecodes::Code code) {
@@ -945,6 +997,7 @@ int MethodData::initialize_data(BytecodeStream* stream,
 #if defined(COMPILER1) && !(defined(COMPILER2) || INCLUDE_JVMCI)
   return 0;
 #else
+  int aux_size   = 0;
   int cell_count = -1;
   int tag = DataLayout::no_tag;
   DataLayout* data_layout = data_layout_at(data_index);
@@ -997,6 +1050,15 @@ int MethodData::initialize_data(BytecodeStream* stream,
       tag = DataLayout::virtual_call_type_data_tag;
     } else {
       tag = DataLayout::virtual_call_data_tag;
+    }
+
+    // Do auxiliary data
+    if (PredictBufferSize && stream_can_profile_buffer(stream)) {
+      assert(cell_count > 0, "sanity");
+      const int aux_cell_count = AverageData::static_cell_count();
+      DataLayout* aux_layout = data_layout_at(data_index + DataLayout::compute_size_in_bytes(cell_count));
+      aux_layout->initialize(DataLayout::average_data_tag, stream->bci(), aux_cell_count);
+      aux_size += DataLayout::compute_size_in_bytes(aux_cell_count);
     }
     break;
   }
@@ -1051,15 +1113,19 @@ int MethodData::initialize_data(BytecodeStream* stream,
            tag == DataLayout::counter_data_tag ||
            tag == DataLayout::virtual_call_type_data_tag ||
            tag == DataLayout::virtual_call_data_tag)) ||
+           bytecode_cell_count(c) == aux_data_profile ||
          cell_count == bytecode_cell_count(c), "cell counts must agree");
+  NOT_PRODUCT(assert(aux_size == 0 || bytecode_has_aux_profile(stream->code()), "check"));
+
   if (cell_count >= 0) {
     assert(tag != DataLayout::no_tag, "bad tag");
     assert(bytecode_has_profile(c), "agree w/ BHP");
     data_layout->initialize(tag, stream->bci(), cell_count);
-    return DataLayout::compute_size_in_bytes(cell_count);
+    return DataLayout::compute_size_in_bytes(cell_count) + aux_size;
   } else {
+    // This check may not be valid if composite data without primary data is allowed
     assert(!bytecode_has_profile(c), "agree w/ !BHP");
-    return 0;
+    return aux_size;
   }
 #endif
 }
@@ -1077,7 +1143,7 @@ ProfileData* DataLayout::data_in() {
   switch (tag()) {
   case DataLayout::no_tag:
   default:
-    ShouldNotReachHere();
+    assert(false, "Unknown tag %hhu", tag());
     return NULL;
   case DataLayout::bit_data_tag:
     return new BitData(this);
@@ -1105,6 +1171,8 @@ ProfileData* DataLayout::data_in() {
     return new ParametersTypeData(this);
   case DataLayout::speculative_trap_data_tag:
     return new SpeculativeTrapData(this);
+  case DataLayout::average_data_tag:
+    return new AverageData(this);
   }
 }
 
@@ -1156,7 +1224,9 @@ void MethodData::initialize() {
   Bytecodes::Code c;
   bool needs_speculative_traps = false;
   while ((c = stream.next()) >= 0) {
+    NOT_PRODUCT(int kept_bci = stream.bci());
     int size_in_bytes = initialize_data(&stream, data_size);
+    assert(kept_bci == stream.bci(), "stream should not be changed");
     data_size += size_in_bytes;
     if (size_in_bytes == 0 JVMCI_ONLY(&& Bytecodes::can_trap(c)))  empty_bc_count += 1;
     needs_speculative_traps = needs_speculative_traps || is_speculative_trap_bytecode(c);
@@ -1771,3 +1841,16 @@ void MethodData::verify_clean_weak_method_links() {
   verify_extra_data_clean(&cl);
 }
 #endif // ASSERT
+
+void AverageData::print_data_on(outputStream *st, const char *extra) const {
+  print_shared(st, "AverageData", extra);
+	jlong sum = avg_sum();
+	jlong count = avg_count();
+
+  st->print("sum(%ld) count(%u) min(%d) max(%d)", sum, count, avg_min(), avg_max());
+	if (count > 0) {
+		st->print_cr(" avg(%ld)", sum / count);
+	}else {
+		st->print_cr(" avg(n/a)");
+	}
+}

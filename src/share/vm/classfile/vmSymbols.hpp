@@ -409,6 +409,7 @@
   template(numberOfLeadingZeros_name,                 "numberOfLeadingZeros")                     \
   template(numberOfTrailingZeros_name,                "numberOfTrailingZeros")                    \
   template(bitCount_name,                             "bitCount")                                 \
+  template(count_name,                                "count")                                    \
   template(profile_name,                              "profile")                                  \
   template(equals_name,                               "equals")                                   \
   template(length_name,                               "length")                                   \
@@ -537,6 +538,8 @@
   template(void_class_signature,                      "()Ljava/lang/Class;")                                      \
   template(void_class_array_signature,                "()[Ljava/lang/Class;")                                     \
   template(void_string_signature,                     "()Ljava/lang/String;")                                     \
+  template(void_bytearray_signature,                 "()[B")                                                      \
+  template(void_chararray_signature,                 "()[C")                                                      \
   template(void_module_signature,                     "()Ljava/lang/reflect/Module;")                             \
   template(object_array_object_signature,             "([Ljava/lang/Object;)Ljava/lang/Object;")                  \
   template(object_object_array_object_signature,      "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;")\
@@ -650,7 +653,6 @@
   template(appendToClassPathForInstrumentation_name,   "appendToClassPathForInstrumentation")                     \
   do_alias(appendToClassPathForInstrumentation_signature, string_void_signature)                                  \
   template(serializePropertiesToByteArray_name,        "serializePropertiesToByteArray")                          \
-  template(serializePropertiesToByteArray_signature,   "()[B")                                                    \
   template(serializeAgentPropertiesToByteArray_name,   "serializeAgentPropertiesToByteArray")                     \
   template(classRedefinedCount_name,                   "classRedefinedCount")                                     \
   template(classLoader_name,                           "classLoader")                                             \
@@ -979,6 +981,18 @@
   do_intrinsic(_montgomerySquare,      java_math_BigInteger, montgomerySquare_name, montgomerySquare_signature, F_S)    \
    do_name(     montgomerySquare_name,                             "implMontgomerySquare")                              \
    do_signature(montgomerySquare_signature,                        "([I[IIJ[I)[I")                                      \
+                                                                                                                        \
+  do_class(java_io_ByteArrayOutputStream,           "java/io/ByteArrayOutputStream")                                 \
+   do_intrinsic(_ByteArrayOutputStream_void,        java_io_ByteArrayOutputStream, object_initializer_name, void_method_signature, F_R) \
+   do_intrinsic(_ByteArrayOutputStream_int,         java_io_ByteArrayOutputStream, object_initializer_name, int_void_signature, F_R) \
+   do_intrinsic(_ByteArrayOutputStream_toByteArray, java_io_ByteArrayOutputStream, toByteArray_name, void_bytearray_signature, F_Y) \
+   do_name(toByteArray_name, "toByteArray")                                                                             \
+                                                                                                                        \
+  do_class(java_io_CharArrayWriter,           "java/io/CharArrayWriter")                                        \
+   do_intrinsic(_CharArrayWriter_void,        java_io_CharArrayWriter, object_initializer_name, void_method_signature, F_R) \
+   do_intrinsic(_CharArrayWriter_int,         java_io_CharArrayWriter, object_initializer_name, int_void_signature, F_R) \
+   do_intrinsic(_CharArrayWriter_toCharArray, java_io_CharArrayWriter, toCharArray_name, void_chararray_signature, F_R) \
+   do_name(toCharArray_name, "toCharArray")                                                                              \
                                                                                                                         \
   do_class(java_util_ArraysSupport, "java/util/ArraysSupport")                                                          \
   do_intrinsic(_vectorizedMismatch, java_util_ArraysSupport, vectorizedMismatch_name, vectorizedMismatch_signature, F_S)\
@@ -1639,5 +1653,38 @@ public:
   static bool is_intrinsic_disabled(vmIntrinsics::ID id);
   static bool is_intrinsic_available(vmIntrinsics::ID id);
 };
+
+
+/// Macro encapsulating all information about classes being profiled for buffer sizes
+#define VM_BUFFER_PROFILED_CLASSES_DO(do_klass) \
+do_klass(                                                                                                                     \
+  vmSymbols::java_lang_StringBuilder(),                                                                                       \
+  SystemDictionary::StringBuilder_klass_addr(),                                                                               \
+  vmIntrinsics::_StringBuilder_void,                                                                                          \
+  vmIntrinsics::_StringBuilder_toString,                vmSymbols::toString_name(),   vmSymbols::void_string_signature(),     \
+  SystemDictionary::StringBuilder_count_addr(),         ciSymbol::count_name(),       ciSymbol::int_signature(),              \
+  16)                                                                                                                         \
+do_klass(                                                                                                                     \
+  vmSymbols::java_lang_StringBuffer(),                                                                                        \
+  SystemDictionary::StringBuffer_klass_addr(),                                                                                \
+  vmIntrinsics::_StringBuffer_void,                                                                                           \
+  vmIntrinsics::_StringBuffer_toString,                 vmSymbols::toString_name(),   vmSymbols::void_string_signature(),     \
+  SystemDictionary::StringBuffer_count_addr(),          ciSymbol::count_name(),       ciSymbol::int_signature(),              \
+  16)                                                                                                                         \
+do_klass(                                                                                                                     \
+  vmSymbols::java_io_ByteArrayOutputStream(),                                                                                 \
+  SystemDictionary::ByteArrayOutputStream_klass_addr(),                                                                       \
+  vmIntrinsics::_ByteArrayOutputStream_void,                                                                                  \
+  vmIntrinsics::_ByteArrayOutputStream_toByteArray,     vmSymbols::toByteArray_name(), vmSymbols::void_bytearray_signature(), \
+  SystemDictionary::ByteArrayOutputStream_count_addr(), ciSymbol::count_name(),        ciSymbol::int_signature(),             \
+  32)                                                                                                                         \
+do_klass(                                                                                                                     \
+  vmSymbols::java_io_CharArrayWriter(),                                                                                       \
+  SystemDictionary::CharArrayWriter_klass_addr(),                                                                             \
+  vmIntrinsics::_CharArrayWriter_void,                                                                                        \
+  vmIntrinsics::_CharArrayWriter_toCharArray,           vmSymbols::toCharArray_name(), vmSymbols::void_chararray_signature(), \
+  SystemDictionary::CharArrayWriter_count_addr(),       ciSymbol::count_name(),        ciSymbol::int_signature(),             \
+  32)                                                                                                                         \
+
 
 #endif // SHARE_VM_CLASSFILE_VMSYMBOLS_HPP

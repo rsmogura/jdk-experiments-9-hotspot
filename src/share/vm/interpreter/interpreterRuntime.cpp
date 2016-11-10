@@ -998,9 +998,15 @@ IRT_LEAF(void, InterpreterRuntime::verify_mdp(Method* method, address bcp, addre
     int expected_approx_bci = mdo->data_at(expected_di)->bci();
     int approx_bci = -1;
     if (current_di >= 0) {
-      approx_bci = mdo->data_at(current_di)->bci();
+      const int current_tag = mdo->tag_at(current_di);
+      // Check if address can represent
+      if (DataLayout::no_tag > current_tag && current_tag < DataLayout::__closing_data_tag) {
+        approx_bci = mdo->data_at(current_di)->bci();
+        tty->print_cr("  actual bci is %d  expected bci %d", approx_bci, expected_approx_bci);
+      }else {
+        tty->print_cr("  unexpected data tag %hhu at actual mdp", current_tag);
+      }
     }
-    tty->print_cr("  actual bci is %d  expected bci %d", approx_bci, expected_approx_bci);
     mdo->print_on(tty);
     method->print_codes();
   }

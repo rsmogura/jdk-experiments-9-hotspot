@@ -106,6 +106,7 @@ class         UnsafeGetAndSetObject;
 class   ProfileCall;
 class   ProfileReturnType;
 class   ProfileInvoke;
+class   ProfileAverageData;
 class   RuntimeCall;
 class   MemBar;
 class   RangeCheckPredicate;
@@ -205,6 +206,7 @@ class InstructionVisitor: public StackObj {
   virtual void do_ProfileCall    (ProfileCall*     x) = 0;
   virtual void do_ProfileReturnType (ProfileReturnType*  x) = 0;
   virtual void do_ProfileInvoke  (ProfileInvoke*   x) = 0;
+  virtual void do_ProfileAverageData (ProfileAverageData*   x) = 0;
   virtual void do_RuntimeCall    (RuntimeCall*     x) = 0;
   virtual void do_MemBar         (MemBar*          x) = 0;
   virtual void do_RangeCheckPredicate(RangeCheckPredicate* x) = 0;
@@ -213,6 +215,63 @@ class InstructionVisitor: public StackObj {
 #endif
 };
 
+class DefaultInstructionVisitor: public InstructionVisitor {
+public:
+  void do_Constant       (Constant*        x) { /* nothing to do */ };
+  void do_IfOp           (IfOp*            x) { /* nothing to do */ };
+  void do_LogicOp        (LogicOp*         x) { /* nothing to do */ };
+  void do_ArithmeticOp   (ArithmeticOp*    x) { /* nothing to do */ };
+  void do_Phi            (Phi*             x) { /* nothing to do */ };
+  void do_StoreField     (StoreField*      x) { /* nothing to do */ };
+  void do_StoreIndexed   (StoreIndexed*    x) { /* nothing to do */ };
+  void do_MonitorEnter   (MonitorEnter*    x) { /* nothing to do */ };
+  void do_MonitorExit    (MonitorExit*     x) { /* nothing to do */ };
+  void do_Invoke         (Invoke*          x) { /* nothing to do */ };
+  void do_UnsafePutRaw   (UnsafePutRaw*    x) { /* nothing to do */ };
+  void do_UnsafePutObject(UnsafePutObject* x) { /* nothing to do */ };
+  void do_Intrinsic      (Intrinsic*       x) { /* nothing to do */ };
+  void do_Local          (Local*           x) { /* nothing to do */ };
+  void do_LoadField      (LoadField*       x) { /* nothing to do */ };
+  void do_ArrayLength    (ArrayLength*     x) { /* nothing to do */ };
+  void do_LoadIndexed    (LoadIndexed*     x) { /* nothing to do */ };
+  void do_NegateOp       (NegateOp*        x) { /* nothing to do */ };
+  void do_ShiftOp        (ShiftOp*         x) { /* nothing to do */ };
+  void do_CompareOp      (CompareOp*       x) { /* nothing to do */ };
+  void do_Convert        (Convert*         x) { /* nothing to do */ };
+  void do_NullCheck      (NullCheck*       x) { /* nothing to do */ };
+  void do_TypeCast       (TypeCast*        x) { /* nothing to do */ };
+  void do_NewInstance    (NewInstance*     x) { /* nothing to do */ };
+  void do_NewTypeArray   (NewTypeArray*    x) { /* nothing to do */ };
+  void do_NewObjectArray (NewObjectArray*  x) { /* nothing to do */ };
+  void do_NewMultiArray  (NewMultiArray*   x) { /* nothing to do */ };
+  void do_CheckCast      (CheckCast*       x) { /* nothing to do */ };
+  void do_InstanceOf     (InstanceOf*      x) { /* nothing to do */ };
+  void do_BlockBegin     (BlockBegin*      x) { /* nothing to do */ };
+  void do_Goto           (Goto*            x) { /* nothing to do */ };
+  void do_If             (If*              x) { /* nothing to do */ };
+  void do_IfInstanceOf   (IfInstanceOf*    x) { /* nothing to do */ };
+  void do_TableSwitch    (TableSwitch*     x) { /* nothing to do */ };
+  void do_LookupSwitch   (LookupSwitch*    x) { /* nothing to do */ };
+  void do_Return         (Return*          x) { /* nothing to do */ };
+  void do_Throw          (Throw*           x) { /* nothing to do */ };
+  void do_Base           (Base*            x) { /* nothing to do */ };
+  void do_OsrEntry       (OsrEntry*        x) { /* nothing to do */ };
+  void do_ExceptionObject(ExceptionObject* x) { /* nothing to do */ };
+  void do_RoundFP        (RoundFP*         x) { /* nothing to do */ };
+  void do_UnsafeGetRaw   (UnsafeGetRaw*    x) { /* nothing to do */ };
+  void do_UnsafeGetObject(UnsafeGetObject* x) { /* nothing to do */ };
+  void do_UnsafeGetAndSetObject(UnsafeGetAndSetObject* x) { /* nothing to do */ };
+  void do_ProfileCall    (ProfileCall*     x) { /* nothing to do */ };
+  void do_ProfileReturnType (ProfileReturnType*  x) { /* nothing to do */ };
+  void do_ProfileInvoke  (ProfileInvoke*   x) { /* nothing to do */ };
+  void do_ProfileAverageData(ProfileAverageData* x) { /* nothing to do */ };
+  void do_RuntimeCall    (RuntimeCall*     x) { /* nothing to do */ };
+  void do_MemBar         (MemBar*          x) { /* nothing to do */ };
+  void do_RangeCheckPredicate(RangeCheckPredicate* x) { /* nothing to do */ };
+#ifdef ASSERT
+  void do_Assert         (Assert*          x) { /* nothing to do */ };
+#endif
+};
 
 // Hashing support
 //
@@ -2523,6 +2582,35 @@ LEAF(ProfileReturnType, Instruction)
   virtual void input_values_do(ValueVisitor* f)   {
     if (_ret != NULL) {
       f->visit(&_ret);
+    }
+  }
+};
+
+LEAF(ProfileAverageData, Instruction)
+ private:
+  ciMethod*        _method;
+  int              _bci_of_data;
+  Value            _number;
+
+ public:
+  ProfileAverageData(ciMethod* method, int bci, Value number)
+    : Instruction(voidType)
+    , _method(method)
+    , _bci_of_data(bci)
+    , _number(number)
+  {
+    set_needs_null_check(true);
+    // The ProfileType has side-effects and must occur precisely where located
+    pin();
+  }
+
+  ciMethod* method()             const { return _method; }
+  int bci_of_data()              const { return _bci_of_data; }
+  Value number()                 const { return _number; }
+
+  virtual void input_values_do(ValueVisitor* f)   {
+    if (_number != NULL) {
+      f->visit(&_number);
     }
   }
 };

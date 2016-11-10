@@ -32,6 +32,7 @@
 #include "c1/c1_RangeCheckElimination.hpp"
 #include "c1/c1_ValueMap.hpp"
 #include "c1/c1_ValueStack.hpp"
+#include "c1/c1_BufferSizePredictor.hpp"
 #include "code/debugInfoRec.hpp"
 #include "compiler/compileLog.hpp"
 #include "compiler/compilerDirectives.hpp"
@@ -171,6 +172,17 @@ void Compilation::build_hir() {
 #endif
 
   _hir->verify();
+
+  if (PredictBufferSize && _buffer_size_predictor) {
+    _buffer_size_predictor->profile(hir());
+
+#ifndef PRODUCT
+    if (PrintCFG || PrintCFG0) { tty->print_cr("CFG after parsing"); _hir->print(true); }
+    if (PrintIR  || PrintIR0 ) { tty->print_cr("IR after parsing"); _hir->print(false); }
+#endif
+    _hir->verify();
+}
+
 
   if (UseC1Optimizations) {
     NEEDS_CLEANUP
@@ -571,6 +583,10 @@ Compilation::Compilation(AbstractCompiler* compiler, ciEnv* env, ciMethod* metho
   _env->set_compiler_data(this);
   _exception_info_list = new ExceptionInfoList();
   _implicit_exception_table.set_size(0);
+
+  if (PredictBufferSize)
+    _buffer_size_predictor = new C1_BufferSizePredictor();
+
   compile_method();
   if (bailed_out()) {
     _env->record_method_not_compilable(bailout_msg(), !TieredCompilation);

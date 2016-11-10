@@ -907,6 +907,11 @@ void InstructionPrinter::do_ProfileInvoke(ProfileInvoke* x) {
 
 }
 
+void InstructionPrinter::do_ProfileAverageData(ProfileAverageData* x) {
+  output()->print("profile_average ");
+  print_value(x->number());
+}
+
 void InstructionPrinter::do_RuntimeCall(RuntimeCall* x) {
   output()->print("call_rt %s(", x->entry_name());
   for (int i = 0; i < x->number_of_arguments(); i++) {

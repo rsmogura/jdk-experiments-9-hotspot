@@ -49,6 +49,11 @@ class ciSpeculativeTrapData;
 
 typedef ProfileData ciProfileData;
 
+class ciAverageData : public AverageData {
+public:
+  ciAverageData(DataLayout* layout) : AverageData(layout) {};
+};
+
 class ciBitData : public BitData {
 public:
   ciBitData(DataLayout* layout) : BitData(layout) {};
@@ -531,6 +536,9 @@ public:
   // Get the data at an arbitrary bci, or NULL if there is none. If m
   // is not NULL look for a SpeculativeTrapData if any first.
   ciProfileData* bci_to_data(int bci, ciMethod* m = NULL);
+
+  /** Returns auxiliary data of data_tag type at given bci */
+  ciProfileData* bci_to_aux_data(int bci, int data_tag);
 
   uint overflow_trap_count() const {
     return _orig.overflow_trap_count();

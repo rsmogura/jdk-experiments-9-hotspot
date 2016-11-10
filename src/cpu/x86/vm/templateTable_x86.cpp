@@ -3631,6 +3631,7 @@ void TemplateTable::invokevirtual_helper(Register index,
   // profile this call
   __ profile_final_call(rax);
   __ profile_arguments_type(rax, method, rbcp, true);
+  __ profile_average_stats(rax, recv);
 
   __ jump_from_interpreted(method, rax);
 
@@ -3647,13 +3648,15 @@ void TemplateTable::invokevirtual_helper(Register index,
   __ profile_called_method(method, rdx, rbcp);
 
   __ profile_arguments_type(rdx, method, rbcp, true);
+
+  __ profile_average_stats(rdx, recv);
   __ jump_from_interpreted(method, rdx);
 }
 
 void TemplateTable::invokevirtual(int byte_no) {
   transition(vtos, vtos);
   assert(byte_no == f2_byte, "use this argument");
-  prepare_invoke(byte_no,
+  prepare_invoke(byte_no ,
                  rbx,    // method or vtable index
                  noreg,  // unused itable index
                  rcx, rdx); // recv, flags
@@ -3663,6 +3666,7 @@ void TemplateTable::invokevirtual(int byte_no) {
   // rdx: flags
 
   invokevirtual_helper(rbx, rcx, rdx);
+  shouldnotreachhere();
 }
 
 void TemplateTable::invokespecial(int byte_no) {

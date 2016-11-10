@@ -339,7 +339,7 @@ void PrintSystemPropertiesDCmd::execute(DCmdSource source, TRAPS) {
   JavaValue result(T_OBJECT);
   JavaCallArguments args;
 
-  Symbol* signature = vmSymbols::serializePropertiesToByteArray_signature();
+  Symbol* signature = vmSymbols::void_bytearray_signature();
   JavaCalls::call_static(&result,
                          ik,
                          vmSymbols::serializePropertiesToByteArray_name(),

@@ -2474,6 +2474,11 @@ public:
   product(bool, UseTypeProfile, true,                                       \
           "Check interpreter profile for historically monomorphic calls")   \
                                                                             \
+  experimental(bool, PredictBufferSize, false,                              \
+          "Profile and predict buffer size for classes like "               \
+          "StringBuilder, StringBuffer, ByteArrayOutputStream, "            \
+          "CharArrayWriter")                                                \
+                                                                            \
   diagnostic(bool, PrintInlining, false,                                    \
           "Print inlining optimizations")                                   \
                                                                             \

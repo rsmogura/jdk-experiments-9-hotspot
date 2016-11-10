@@ -247,11 +247,27 @@ class InterpreterMacroAssembler: public MacroAssembler {
                                      OffsetFunction item_offset_fn, OffsetFunction item_count_offset_fn,
                                      int non_profiled_offset);
 
+  void load_well_known_offset(Register dest, Register obj, InstanceKlass** klass_addr,
+                              int* offset_addr,
+                              Label& no_offset_jmp,
+                              Label& wrong_klass_jmp);
+
+  ///
+  /// @param no_offset_jmp jump when klass_addr is same as obj addr, but offset is still not loaded
+  void increase_stats_from_int_field(Register field_val_dest,
+                                     Register obj, Register field_offset_addr,
+                                     Register mdp,
+                                     InstanceKlass** klass_addr,
+                                     int* offset_addr,
+                                     Label& no_offset_jmp,
+                                     Label& success_label);
+
   void update_mdp_by_offset(Register mdp_in, int offset_of_offset);
   void update_mdp_by_offset(Register mdp_in, Register reg, int offset_of_disp);
   void update_mdp_by_constant(Register mdp_in, int constant);
   void update_mdp_for_ret(Register return_bci);
 
+  void profile_average_stats(Register mdp, Register receiver);
   void profile_taken_branch(Register mdp, Register bumped_count);
   void profile_not_taken_branch(Register mdp);
   void profile_call(Register mdp);

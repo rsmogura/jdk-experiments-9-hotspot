@@ -103,6 +103,8 @@ class GraphBuilder VALUE_OBJ_CLASS_SPEC {
     // When inlining do not push the result on the stack
     bool         _ignore_return;
 
+    /** Receiver, if any */
+    Value _receiver;    
    public:
     ScopeData(ScopeData* parent);
 
@@ -169,6 +171,10 @@ class GraphBuilder VALUE_OBJ_CLASS_SPEC {
 
     bool ignore_return() const                     { return _ignore_return;          }
     void set_ignore_return(bool ignore_return)     { _ignore_return = ignore_return; }
+
+    /** Receiver for scope if any, set during method inlining. */
+    Value receiver() { return _receiver; };
+    void set_receiver(Value receiver) { this->_receiver = receiver; }
   };
 
   // for all GraphBuilders
@@ -194,6 +200,7 @@ class GraphBuilder VALUE_OBJ_CLASS_SPEC {
   // accessors
   ScopeData*        scope_data() const           { return _scope_data; }
   Compilation*      compilation() const          { return _compilation; }
+  C1_BufferSizePredictor* buffer_size_predictor(){ return compilation()->buffer_size_predictor(); }
   BlockList*        bci2block() const            { return scope_data()->bci2block(); }
   ValueMap*         vmap() const                 { assert(UseLocalValueNumbering, "should not access otherwise"); return _vmap; }
   bool              has_handler() const          { return scope_data()->has_handler(); }
@@ -268,7 +275,7 @@ class GraphBuilder VALUE_OBJ_CLASS_SPEC {
   Value round_fp(Value fp_value);
 
   // stack/code manipulation helpers
-  Instruction* append_with_bci(Instruction* instr, int bci);
+  Instruction* append_with_bci(Instruction* instr, int bci, bool skipValueNumbering = false);
   Instruction* append(Instruction* instr);
   Instruction* append_split(StateSplit* instr);
 
@@ -283,6 +290,20 @@ class GraphBuilder VALUE_OBJ_CLASS_SPEC {
   Dependencies* dependency_recorder() const; // = compilation()->dependencies()
   bool direct_compare(ciKlass* k);
   Value make_constant(ciConstant value, ciField* field);
+  /// Get receiver from stack
+  Value get_receiver(ciMethod* target);
+
+  /// Checks if given call to constructor can be used to profile buffer size
+  bool can_profile_constructor_for_buffer_size(ciMethod* target);
+
+  /// Record information about constructor for buffer profiling
+  bool record_constructor_for_buffer_profiling(ciMethod* target);
+
+  /// Checks and adds given call (current method and bci) to statistics for buffer profiling
+  bool record_finish_meth_for_buffer_profiling(ciMethod *target);
+
+  /// Adds profiling code for buffer profiling
+  void profile_buffer_finish_method(Value receiver, ciMethod *target);
 
   void kill_all();
 
@@ -368,7 +389,7 @@ class GraphBuilder VALUE_OBJ_CLASS_SPEC {
   void clear_inline_bailout();
   ValueStack* state_at_entry();
   void push_root_scope(IRScope* scope, BlockList* bci2block, BlockBegin* start);
-  void push_scope(ciMethod* callee, BlockBegin* continuation);
+  void push_scope(ciMethod* callee, Value receiver, BlockBegin* continuation);
   void push_scope_for_jsr(BlockBegin* jsr_continuation, int jsr_dest_bci);
   void pop_scope();
   void pop_scope_for_jsr();
@@ -398,6 +419,7 @@ class GraphBuilder VALUE_OBJ_CLASS_SPEC {
   bool profile_parameters()    { return _compilation->profile_parameters();    }
   bool profile_arguments()     { return _compilation->profile_arguments();     }
   bool profile_return()        { return _compilation->profile_return();        }
+  bool profile_buffer_size()   { return _compilation->profile_buffer_size();   }
 
   Values* args_list_for_profiling(ciMethod* target, int& start, bool may_have_receiver);
   Values* collect_args_for_profiling(Values* args, ciMethod* target, bool may_have_receiver);
@@ -422,6 +444,34 @@ class GraphBuilder VALUE_OBJ_CLASS_SPEC {
   static void sort_top_into_worklist(BlockList* worklist, BlockBegin* top);
 
   BlockBegin* start() const                      { return _start; }
+
+  /// Visitor for finding topmost allocation
+  class FindAllocationVisitor : public DefaultInstructionVisitor {
+  private:
+    Instruction* _initial_receiver;
+    NewInstance* _found;
+  public:
+    FindAllocationVisitor(Instruction* _initial_receiver)
+            : _initial_receiver(_initial_receiver)
+            , _found(NULL) {
+    }
+    static inline NewInstance* find_allocation(Instruction* _initial_receiver) {
+      assert(_initial_receiver, "Should not be null");
+
+      NewInstance* result = _initial_receiver->as_NewInstance();
+      if (!result) {
+        FindAllocationVisitor v(_initial_receiver);
+        _initial_receiver->visit(&v);
+        result = v._found;
+      }
+
+      return result;
+    }
+    virtual void do_Invoke         (Invoke*          x);
+    virtual void do_NewInstance    (NewInstance*     x);
+    virtual void do_CheckCast      (CheckCast*       x);
+  };
+
 };
 
 #endif // SHARE_VM_C1_C1_GRAPHBUILDER_HPP

@@ -86,6 +86,7 @@ class SymbolPropertyTable;
 // These klasses must all have names defined in vmSymbols.
 
 #define WK_KLASS_ENUM_NAME(kname)    kname##_knum
+#define WK_OFFSETS_ENUM_NAME(oname)  oname##_onum
 
 // Each well-known class has a short klass name (like object_klass),
 // a vmSymbol name (like java_lang_Object), and a flag word
@@ -202,12 +203,22 @@ class SymbolPropertyTable;
   do_klass(Integer_klass,                               java_lang_Integer,                         Pre                 ) \
   do_klass(Long_klass,                                  java_lang_Long,                            Pre                 ) \
                                                                                                                          \
+  /* Support for profiling buffers */                                                                                    \
+  do_klass(ByteArrayOutputStream_klass,                 java_io_ByteArrayOutputStream,             Pre                 ) \
+  do_klass(CharArrayWriter_klass,                       java_io_CharArrayWriter,                   Pre                 ) \
+                                                                                                                         \
   /* Extensions */                                                                                                       \
   WK_KLASSES_DO_EXT(do_klass)                                                                                            \
   /* JVMCI classes. These are loaded on-demand. */                                                                       \
   JVMCI_WK_KLASSES_DO(do_klass)                                                                                          \
                                                                                                                          \
   /*end*/
+
+#define WK_OFFSETS_DO(do_offset)                                                                                         \
+  do_offset(StringBuilder_count,           StringBuilder_klass,             count_name,              int_signature)      \
+  do_offset(StringBuffer_count,            StringBuffer_klass,              count_name,              int_signature)      \
+  do_offset(ByteArrayOutputStream_count,   ByteArrayOutputStream_klass,     count_name,              int_signature)      \
+  do_offset(CharArrayWriter_count,         CharArrayWriter_klass,           count_name,              int_signature)      \
 
 
 class SystemDictionary : AllStatic {
@@ -233,6 +244,13 @@ class SystemDictionary : AllStatic {
     FIRST_WKID = NO_WKID + 1
   };
 
+  enum WKO_ID {
+    NO_WOID = 0,
+    #define WKO_ID_ENUM(name, klass, field_symbol, field_signature) WK_OFFSETS_ENUM_NAME(name),
+    WK_OFFSETS_DO(WKO_ID_ENUM)
+    #undef WKO_ID_ENUM
+    WOID_LIMIT
+  };
   enum InitOption {
     Pre,                        // preloaded; error if not present
 
@@ -444,6 +462,13 @@ public:
   WK_KLASSES_DO(WK_KLASS_DECLARE);
   #undef WK_KLASS_DECLARE
 
+  #define WKO_KLASS_DECLARE(name, klass, field_symbol, field_signature) \
+    static int* name##_addr() {                                                                       \
+      return &SystemDictionary::_well_known_field_offsets[SystemDictionary::WK_OFFSETS_ENUM_NAME(name)];           \
+    }
+	WK_OFFSETS_DO(WKO_KLASS_DECLARE);
+  #undef WKO_KLASS_DECLARE
+
   static InstanceKlass* well_known_klass(WKID id) {
     assert(id >= (int)FIRST_WKID && id < (int)WKID_LIMIT, "oob");
     return _well_known_klasses[id];
@@ -453,6 +478,11 @@ public:
     assert(id >= (int)FIRST_WKID && id < (int)WKID_LIMIT, "oob");
     return &_well_known_klasses[id];
   }
+
+	static int* well_known_field_offset_addr(WKO_ID id) {
+		assert(id >= (int)NO_WOID && id < (int)WOID_LIMIT, "oob");
+		return &_well_known_field_offsets[id];
+	}
 
   // Local definition for direct access to the private array:
   #define WK_KLASS(name) _well_known_klasses[SystemDictionary::WK_KLASS_ENUM_NAME(name)]
@@ -470,6 +500,10 @@ public:
   static void load_abstract_ownable_synchronizer_klass(TRAPS);
 
 protected:
+  /** Updates all offsets for given well_known_klass_id
+   * @param klass - the klass representing well_known_klass_id
+   * */
+  static void update_well_known_offsets(WKID well_known_klass_id, InstanceKlass* klass);
   // Tells whether ClassLoader.loadClassInternal is present
   static bool has_loadClassInternal()       { return _has_loadClassInternal; }
 
@@ -707,6 +741,9 @@ protected:
   // Variables holding commonly used klasses (preloaded)
   static InstanceKlass* _well_known_klasses[];
 
+  /** Holds offsets to "well known" fields. */
+  static int _well_known_field_offsets[];
+
   // Lazily loaded klasses
   static InstanceKlass* volatile _abstract_ownable_synchronizer_klass;
 
@@ -717,6 +754,60 @@ protected:
 
   static bool _has_loadClassInternal;
   static bool _has_checkPackageAccess;
+};
+
+/// This class holds and encapsulates configuration needed for profiling buffer size for classes
+/// like StringBuilder, StringBuffer, CharArrayWriter, ByteArrayOutputStream.
+/// This class is used in interpreter, method data, and compilers, as each of those
+/// requires a bit different set of information to work correctly
+class vmBufferProfiledClass {
+    friend jint init_globals();
+private:
+		Symbol*          _klass_symbol;
+		vmIntrinsics::ID _default_init_id;
+		vmIntrinsics::ID _terminating_method;
+		Symbol*          _terminating_method_name;
+		Symbol*          _terminating_method_signature;
+		InstanceKlass**  _klass_addr;
+		int*             _size_addr;
+		int              _default_buffer_size;
+
+		/// Holds all buffer profiled class. Use pointers &profiled_classes[0], to avoid copying
+		static vmBufferProfiledClass _profiled_classes[];
+		static int _profiled_classes_count;
+
+    static void initialize();
+public:
+    vmBufferProfiledClass() { assert(_profiled_classes_count == 0, "Should be called only during init"); }
+		vmBufferProfiledClass(vmIntrinsics::ID default_init_id,
+		                      vmIntrinsics::ID terminating_method,
+                          InstanceKlass** klass_addr,
+                          int* size_offset_addr,
+		                      int default_buffer_size);
+
+		vmIntrinsics::ID default_initializer_id() const          { return _default_init_id; }
+		vmIntrinsics::ID terminating_method_id() const           { return _terminating_method; }
+
+    Symbol*          klass_symbol() const                    { return vmSymbols::symbol_at(vmIntrinsics::class_for(_default_init_id)); }
+		Symbol*          terminating_method_name() const         { return vmSymbols::symbol_at(vmIntrinsics::name_for(_terminating_method)); }
+		Symbol*          terminating_method_signature() const    { return vmSymbols::symbol_at(vmIntrinsics::signature_for(_terminating_method)); }
+
+    InstanceKlass**  klass_addr() const                      { assert(*_klass_addr == NULL || (*_klass_addr)->name() == klass_symbol(), "Should be same");
+                                                               return _klass_addr;
+                                                             }
+    int*             size_addr() const                       { return _size_addr; }
+
+    int              default_buffer_size() const             { return _default_buffer_size; }
+
+		// ---- Some helpers ----
+    static vmBufferProfiledClass* profiled_class_at(int i)   { assert(0 <= i && i < _profiled_classes_count, "Out of bounds");
+			return &_profiled_classes[i];
+		}
+
+    static vmBufferProfiledClass* profiled_class_by_initializer(vmIntrinsics::ID id);
+    static vmBufferProfiledClass* profiled_class_by_finish_meth(vmIntrinsics::ID id);
+
+		static int profiled_classes_count()                      { return _profiled_classes_count; }
 };
 
 #endif // SHARE_VM_CLASSFILE_SYSTEMDICTIONARY_HPP

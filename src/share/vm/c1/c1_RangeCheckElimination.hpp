@@ -166,6 +166,7 @@ public:
     void do_ProfileCall    (ProfileCall*     x) { /* nothing to do */ };
     void do_ProfileReturnType (ProfileReturnType*  x) { /* nothing to do */ };
     void do_ProfileInvoke  (ProfileInvoke*   x) { /* nothing to do */ };
+    void do_ProfileAverageData(ProfileAverageData* x) { /* nothing to do */ };
     void do_RuntimeCall    (RuntimeCall*     x) { /* nothing to do */ };
     void do_MemBar         (MemBar*          x) { /* nothing to do */ };
     void do_RangeCheckPredicate(RangeCheckPredicate* x) { /* nothing to do */ };

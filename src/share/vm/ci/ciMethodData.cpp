@@ -155,6 +155,15 @@ void ciMethodData::load_data() {
   ProfileData* data = mdo->first_data();
   while (is_valid(ci_data)) {
     ci_data->translate_from(data);
+    if (data->is_AverageData()) {
+        ciAverageData* avgData = (ciAverageData*) data;
+        if (avgData->avg_count() > 0) {
+          tty->print("Found positive count for ");
+          mdo->method()->print_name(tty);
+          tty->print("\n");
+          data->print_data_on(tty);
+        }
+    }
     ci_data = next_data(ci_data);
     data = mdo->next_data(data);
   }
@@ -226,6 +235,8 @@ ciProfileData* ciMethodData::data_at(int data_index) {
   default:
     ShouldNotReachHere();
     return NULL;
+  case DataLayout::average_data_tag:
+      return new ciAverageData(data_layout);
   case DataLayout::bit_data_tag:
     return new ciBitData(data_layout);
   case DataLayout::counter_data_tag:
@@ -294,6 +305,26 @@ ciProfileData* ciMethodData::bci_to_extra_data(int bci, ciMethod* m, bool& two_f
   return NULL;
 }
 
+ciProfileData* ciMethodData::bci_to_aux_data(int bci, int data_tag) {
+  assert(data_tag >= DataLayout::auxiliary_data_tag, "Should ask for auxiliary data only");
+  ciProfileData* data = data_before(bci);
+  for ( ; is_valid(data); data = next_data(data)) {
+    if (data->bci() == bci) {
+      const u1 tag = data->tag();
+      if (tag == data_tag) {
+        return data;
+      }else if (tag > data_tag) {
+        // Data should be ordered
+        return NULL;
+      }
+    }else if (data->bci() > bci) {
+      break;
+    }
+  }
+
+  return NULL;
+}
+
 // Translate a bci to its corresponding data, or NULL.
 ciProfileData* ciMethodData::bci_to_data(int bci, ciMethod* m) {
   // If m is not NULL we look for a SpeculativeTrapData entry
@@ -302,6 +333,7 @@ ciProfileData* ciMethodData::bci_to_data(int bci, ciMethod* m) {
     for ( ; is_valid(data); data = next_data(data)) {
       if (data->bci() == bci) {
         set_hint_di(dp_to_di(data->dp()));
+        assert(data->tag() < DataLayout::auxiliary_data_tag, "use bci_to_aux_data");
         return data;
       } else if (data->bci() > bci) {
         break;
@@ -625,7 +657,9 @@ void ciMethodData::dump_replay_data(outputStream* out) {
     if (round == 1) out->print(" oops %d", count);
     ProfileData* pdata = first_data();
     for ( ; is_valid(pdata); pdata = next_data(pdata)) {
-      if (pdata->is_VirtualCallData()) {
+      if (pdata->is_AverageData()) {
+        // Skip
+      } else if (pdata->is_VirtualCallData()) {
         ciVirtualCallData* vdata = (ciVirtualCallData*)pdata;
         dump_replay_data_receiver_type_helper<ciVirtualCallData>(out, round, count, vdata);
         if (pdata->is_VirtualCallTypeData()) {

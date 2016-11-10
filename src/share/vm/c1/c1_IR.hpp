@@ -138,6 +138,7 @@ class IRScope: public CompilationResourceObj {
   // hierarchy
   Compilation*  _compilation;                    // the current compilation
   IRScope*      _caller;                         // the caller scope, or NULL
+  int           _caller_bci;                     // the caller bci, if has _caller
   int           _level;                          // the inlining level
   ciMethod*     _method;                         // the corresponding method
   IRScopeList   _callees;                        // the inlined method scopes
@@ -163,6 +164,7 @@ class IRScope: public CompilationResourceObj {
   // accessors
   Compilation*  compilation() const              { return _compilation; }
   IRScope*      caller() const                   { return _caller; }
+  int           caller_bci() const               { return _caller_bci; }
   int           level() const                    { return _level; }
   ciMethod*     method() const                   { return _method; }
   int           max_stack() const;               // NOTE: expensive
@@ -354,6 +356,20 @@ class SubstitutionResolver: public BlockClosure, ValueVisitor {
   }
 
   virtual void block_do(BlockBegin* block);
+};
+
+class InstructionStreamSubstitutionResolver: public BlockClosure {
+    Instruction* _to_substitute;
+public:
+    InstructionStreamSubstitutionResolver(Instruction* to_substitute, IR* hir) : _to_substitute(to_substitute) {
+      hir->iterate_preorder(this);
+    }
+
+    InstructionStreamSubstitutionResolver(Instruction* to_substitute, BlockBegin* block) : _to_substitute(to_substitute) {
+      block->iterate_preorder(this);
+    }
+
+    virtual void block_do(BlockBegin* block);
 };
 
 #endif // SHARE_VM_C1_C1_IR_HPP

@@ -135,6 +135,7 @@ IRScope::IRScope(Compilation* compilation, IRScope* caller, int caller_bci, ciMe
 : _callees(2)
 , _compilation(compilation)
 , _requires_phi_function(method->max_locals())
+, _caller_bci(caller_bci)
 {
   _caller             = caller;
   _level              = caller == NULL ?  0 : caller->level() + 1;
@@ -1400,4 +1401,18 @@ void SubstitutionResolver::block_do(BlockBegin* block) {
   block->block_values_do(&check_substitute);
   if (block->end() && block->end()->state()) block->end()->state()->values_do(&check_substitute);
 #endif
+}
+
+void InstructionStreamSubstitutionResolver::block_do(BlockBegin* block) {
+  for (Instruction* n = block; n != NULL; n = n->next()) {
+
+    if (n->next() == _to_substitute) {
+      Instruction* old_next  = n->next()->next();
+      Instruction* subst     = n->next()->subst();
+      assert(subst != _to_substitute, "Wanted to substitute instruction by self");
+      assert(subst->next() == NULL || subst->next() == old_next, "Should not set next, as this class replace next");
+      n->set_next(subst);
+      subst->set_next(old_next);
+    }
+  }
 }

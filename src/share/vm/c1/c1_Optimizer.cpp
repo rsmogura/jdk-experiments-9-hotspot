@@ -530,6 +530,7 @@ public:
   void do_ProfileCall    (ProfileCall*     x);
   void do_ProfileReturnType (ProfileReturnType*  x);
   void do_ProfileInvoke  (ProfileInvoke*   x);
+  void do_ProfileAverageData(ProfileAverageData* x);
   void do_RuntimeCall    (RuntimeCall*     x);
   void do_MemBar         (MemBar*          x);
   void do_RangeCheckPredicate(RangeCheckPredicate* x);
@@ -717,6 +718,7 @@ void NullCheckVisitor::do_ProfileCall    (ProfileCall*     x) { nce()->clear_las
                                                                 nce()->handle_ProfileCall(x); }
 void NullCheckVisitor::do_ProfileReturnType (ProfileReturnType* x) { nce()->handle_ProfileReturnType(x); }
 void NullCheckVisitor::do_ProfileInvoke  (ProfileInvoke*   x) {}
+void NullCheckVisitor::do_ProfileAverageData(ProfileAverageData* x) {}
 void NullCheckVisitor::do_RuntimeCall    (RuntimeCall*     x) {}
 void NullCheckVisitor::do_MemBar         (MemBar*          x) {}
 void NullCheckVisitor::do_RangeCheckPredicate(RangeCheckPredicate* x) {}

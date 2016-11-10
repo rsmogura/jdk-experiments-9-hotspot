@@ -3407,6 +3407,49 @@ void LIRGenerator::do_ProfileInvoke(ProfileInvoke* x) {
   }
 }
 
+void LIRGenerator::do_ProfileAverageData(ProfileAverageData* x) {
+  ciMethod* m = x->method(); // Method holding data
+  ciMethodData* md = m->method_data();
+  ciProfileData* pd = md->bci_to_aux_data(x->bci_of_data(), DataLayout::average_data_tag);
+  assert(pd != NULL, "Average method data present should be");
+  AverageData* avg = pd->as_AverageData();
+
+  LIR_Opr mdp = new_register(T_METADATA);
+  __ metadata2reg(md->constant_encoding(), mdp);
+
+  //TODO Add other profiling data
+  int count_offset = md->byte_offset_of_slot(avg, AverageData::avg_count_offset());
+  int sum_offset = md->byte_offset_of_slot(avg, AverageData::avg_sum_offset());
+
+  LabelObj* overflow = new LabelObj;
+
+  LIRItem number(x->number(), this);
+  number.load_item();
+
+  LIR_Opr count = new_register(T_INT);
+  LIR_Address* count_addr = new LIR_Address(mdp, count_offset, T_INT);
+
+  __ load(count_addr, count); // Generic code have to load, each time, but it would be pretty rare
+  __ add(count, LIR_OprFact::intConst(1), count);
+  // This prevents overflowing of sum, and should be consistent with template generator
+  __ cmp(lir_cond_notEqual, count,  LIR_OprFact::intConst(max_juint - 1));
+  __ branch(lir_cond_notEqual, T_INT, overflow->label());
+  __ store(count, count_addr);
+
+  LIR_Opr sum = new_register(T_LONG);
+  LIR_Address* sum_addr = new LIR_Address(mdp, sum_offset, T_LONG);
+
+  // Convert to long
+  LIR_Opr l_number = new_register(T_LONG);
+  __ convert(Bytecodes::_i2l, number.result(), l_number);
+    
+  // Increase sum
+  __ load(sum_addr, sum);
+  __ add(sum, l_number, sum);
+  __ store(sum, sum_addr);
+  __ branch_destination(overflow->label());
+}
+
 void LIRGenerator::increment_event_counter(CodeEmitInfo* info, int bci, bool backedge) {
   int freq_log = 0;
   int level = compilation()->env()->comp_level();

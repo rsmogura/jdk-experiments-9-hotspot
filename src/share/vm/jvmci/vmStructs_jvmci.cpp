@@ -414,6 +414,7 @@
   declare_constant(DataLayout::virtual_call_type_data_tag)                \
   declare_constant(DataLayout::parameters_type_data_tag)                  \
   declare_constant(DataLayout::speculative_trap_data_tag)                 \
+  declare_constant(DataLayout::average_data_tag)                          \
                                                                           \
   declare_constant(Deoptimization::Unpack_deopt)                          \
   declare_constant(Deoptimization::Unpack_exception)                      \

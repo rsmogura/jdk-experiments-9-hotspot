@@ -111,7 +111,7 @@ public:
   };
 
   // Tag values
-  enum {
+  enum DataTypes {
     no_tag,
     bit_data_tag,
     counter_data_tag,
@@ -125,7 +125,25 @@ public:
     call_type_data_tag,
     virtual_call_type_data_tag,
     parameters_type_data_tag,
-    speculative_trap_data_tag
+    speculative_trap_data_tag,
+
+    /** Marker tag to distinguish primary and auxiliary data (for historical reasons).
+     * Each auxiliary data tag represents given type of profiled data (ie. AverageData).
+     *
+     * The tags below auxiliary_data_tag are primary data which are mainly associated with
+     * given bytecode and do not change, nor depends on other conditions (with small exceptions)
+     *
+     * One or more auxiliary data can be installed on any bci (however when this comments are
+     * written setting aux data on bci where there is no primary data may lead to errors),
+     * there is only two simple requirements (1) aux data are put in asc order of tag values,
+     * (2) none bci can have two aux data with same tag
+     */
+    auxiliary_data_tag,
+
+    average_data_tag,
+
+    /** Upper bound of tags, not related to any data */
+    __closing_data_tag
   };
 
   enum {
@@ -162,6 +180,10 @@ public:
 
   // Accessors
   u1 tag() {
+    return _header._struct._tag;
+  }
+
+  u1 tag() const {
     return _header._struct._tag;
   }
 
@@ -203,6 +225,15 @@ public:
   void release_set_cell_at(int index, intptr_t value) {
     OrderAccess::release_store_ptr(&_cells[index], value);
   }
+
+  void set_long_cell_at(int index, long val) {
+	  *((long*) &_cells[index]) = val;
+  }
+
+	long long_cell_at(int index) const {
+		return *((long*) &_cells[index]);
+	}
+
   intptr_t cell_at(int index) const {
     return _cells[index];
   }
@@ -278,6 +309,7 @@ class     MultiBranchData;
 class     ArgInfoData;
 class     ParametersTypeData;
 class   SpeculativeTrapData;
+class   AverageData;
 
 // ProfileData
 //
@@ -347,6 +379,19 @@ protected:
   void release_set_int_at(int index, int value) {
     release_set_intptr_at(index, (intptr_t) value);
   }
+
+  long long_at(int index) const {
+    assert(0 <= index && index < cell_count(), "oob");
+    NOT_LP64(assert(index + 1 < cell_count()));
+    return data()->long_cell_at(index);
+  }
+
+  void set_long_at(int index, long l) {
+    assert(0 <= index && index < cell_count(), "oob");
+    NOT_LP64(assert(index + 1 < cell_count()));
+    data()->set_long_cell_at(index, l);
+  }
+
   int int_at(int index) const {
     return (int)intptr_at(index);
   }
@@ -422,6 +467,10 @@ public:
     return data()->bci();
   }
 
+  u1 tag() const {
+    return data()->tag();
+  }
+
   address dp() {
     return (address)_data;
   }
@@ -448,7 +497,7 @@ public:
   virtual bool is_VirtualCallTypeData()const { return false; }
   virtual bool is_ParametersTypeData() const { return false; }
   virtual bool is_SpeculativeTrapData()const { return false; }
-
+  virtual bool is_AverageData()       const  { return false; }
 
   BitData* as_BitData() const {
     assert(is_BitData(), "wrong type");
@@ -489,6 +538,10 @@ public:
   ArgInfoData* as_ArgInfoData() const {
     assert(is_ArgInfoData(), "wrong type");
     return is_ArgInfoData() ? (ArgInfoData*)this : NULL;
+  }
+  AverageData* as_AverageData() const {
+    assert(is_AverageData(), "wrong type");
+    return is_AverageData() ? (AverageData*)this : NULL;
   }
   CallTypeData* as_CallTypeData() const {
     assert(is_CallTypeData(), "wrong type");
@@ -666,6 +719,92 @@ public:
 #endif // CC_INTERP
 
   void print_data_on(outputStream* st, const char* extra = NULL) const;
+};
+
+/** Gathers sum and number of executions */
+class AverageData : public ProfileData {
+private:
+  
+protected :
+  enum {
+    _avg_min,
+    _avg_max,
+    _avg_sum,
+#ifndef _LP64
+    _avg_sum_lo, // Needs additional 32 bit cell
+#endif
+
+    _avg_count,
+    
+    _avg_cell_count
+  };
+
+  void set_sum(long l) {
+    set_long_at(_avg_sum, l);
+  }
+public:
+  AverageData(DataLayout* layout) : ProfileData(layout) {
+    assert(layout->tag() == DataLayout::average_data_tag, "wrong type");
+  } 
+
+  virtual bool is_AverageData() const { return true; }
+
+  virtual bool is_VirtualCallData() const {
+      ShouldNotReachHere(); // Just for finding all places where those data are read from invokevirtual
+      return false;
+  }
+
+  virtual bool is_VirtualCallTypeData() const {
+    ShouldNotReachHere(); // Just for finding all places where those data are read from invokevirtual
+    return false;
+  }
+
+  virtual void print_data_on(outputStream* st, const char* extra = NULL) const;
+
+  virtual int cell_count() const {
+    return static_cell_count();
+  }
+
+  jint avg_min() const {
+    return int_at(_avg_min);
+  }
+
+  jlong avg_sum() const {
+    return long_at(_avg_sum);
+  }
+
+  juint avg_count() const {
+    return uint_at(_avg_count);
+  }
+
+  jint avg_max() const {
+    return int_at(_avg_max);
+  }
+
+  static int static_cell_count() {
+    return _avg_cell_count;
+  }
+  
+  /** The static size of this data. Mainly, used to bump method data pointer. */
+  static ByteSize static_size_in_bytes() {
+    return cell_offset(static_cell_count());
+  }
+  
+  static ByteSize avg_min_offset() {
+    return cell_offset(_avg_min);
+  }
+
+  static ByteSize avg_max_offset() {
+    return cell_offset(_avg_max);
+  }
+
+  static ByteSize avg_sum_offset() {
+    return cell_offset(_avg_sum);
+  }
+
+  static ByteSize avg_count_offset() {
+    return cell_offset(_avg_count);
+  }
 };
 
 // JumpData
@@ -2245,8 +2384,22 @@ private:
   // Helper for size computation
   static int compute_data_size(BytecodeStream* stream);
   static int bytecode_cell_count(Bytecodes::Code code);
+  
+  /** Computes size
+   * @return no_profile_data, or number of cells
+   */
+  static int compute_aux_data_size(BytecodeStream* stream);
+  
+  /** Checks if symbol should be used for profiling backing buffer
+   * (StrignBuilders, ByteArrayOutputStream and similar
+   */
+  static bool stream_can_profile_buffer(BytecodeStream* stream);
+
   static bool is_speculative_trap_bytecode(Bytecodes::Code code);
-  enum { no_profile_data = -1, variable_cell_count = -2 };
+  enum { no_profile_data = -1, variable_cell_count = -2, 
+    /** If bytecode can contain optional primary data, and 0 or more auxiliary data */
+    aux_data_profile = -3
+  };
 
   // Helper for initialization
   DataLayout* data_layout_at(int data_index) const {
@@ -2330,6 +2483,34 @@ public:
   // Determine if a given bytecode can have profile information.
   static bool bytecode_has_profile(Bytecodes::Code code) {
     return bytecode_cell_count(code) != no_profile_data;
+  }
+
+  static bool bytecode_has_aux_profile(Bytecodes::Code code) {
+    return bytecode_cell_count(code) == aux_data_profile;
+  }
+
+	/// Checks if method is a point for profiling buffer statistics
+	static inline bool can_profile_buffer_finish_method(Method *m) {
+		/* During creation of MethodData following snippet not always work
+		 * constantPoolHandle cpool(Thread::current(), stream->method()->constants());
+     * Method* m = ConstantPool::method_at_if_loaded(cpool, const_pool_idx);
+     * m is null, so checking by symbol references.
+     */
+		if (m == NULL)
+			return false;
+		return can_profile_buffer(m->klass_name(), m->name(), m->signature());
+	}
+
+	/// Checks if method is a supported finish method (toString, toByteArray) for profiling buffer statistics.
+	/// Matching has to be performed basing on symbols, because when method data are created not always
+  /// method handle can be obtained
+  static inline bool can_profile_buffer(Symbol* klass_sym, Symbol* method_name, Symbol* signature) {
+    #define CHECK_SYMBOLS(klass, x0, x1, x2, term_name, term_sig, x3, x4, x5, x6)   \
+	  if (klass == klass_sym && term_name == method_name && term_sig == signature)    \
+			return true;
+		VM_BUFFER_PROFILED_CLASSES_DO(CHECK_SYMBOLS)
+		#undef CHECK_SYMBOLS
+	  return false;
   }
 
   // reset into original state
@@ -2450,6 +2631,9 @@ public:
   // Accessors
   Method* method() const { return _method; }
 
+  u1 tag_at(int data_index) const {
+    return data_layout_at(data_index)->tag();
+  }
   // Get the data at an arbitrary (sort of) data index.
   ProfileData* data_at(int data_index) const;
 
