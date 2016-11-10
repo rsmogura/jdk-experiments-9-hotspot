@@ -57,6 +57,7 @@ public:
     Interference_Graph,               // Building the IFG
     Coalesce,                         // Coalescing copies
     Ideal_Loop,                       // Find idealized trip-counted loops
+    Eliminate_Array_Copy,             // Eliminate array copy when when for truncate pattern
     Macro_Expand,                     // Expand macro nodes
     Peephole,                         // Apply peephole optimizations
     last_phase
@@ -67,6 +68,7 @@ public:
     _t_optimizer,
       _t_escapeAnalysis,
         _t_connectionGraph,
+        _t_arrayCopyElimination,
         _t_macroEliminate,
       _t_iterGVN,
       _t_incrInline,

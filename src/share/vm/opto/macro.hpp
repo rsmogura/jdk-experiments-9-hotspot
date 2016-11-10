@@ -26,6 +26,7 @@
 #define SHARE_VM_OPTO_MACRO_HPP
 
 #include "opto/phase.hpp"
+#include "opto/addnode.hpp"
 
 class  AllocateNode;
 class  AllocateArrayNode;
@@ -34,7 +35,7 @@ class  Node;
 class  PhaseIterGVN;
 
 class PhaseMacroExpand : public Phase {
-private:
+protected:
   PhaseIterGVN &_igvn;
 
   // Helper methods roughly modeled after GraphKit:
@@ -100,9 +101,12 @@ private:
   bool eliminate_locking_node(AbstractLockNode *alock);
   void expand_lock_node(LockNode *lock);
   void expand_unlock_node(UnlockNode *unlock);
+  Node* alignx_up_log(Node* addr, Node* size);
+  IfNode* make_if(Node *control, Node *check, Node *&out_true, Node *&out_false);
 
   // More helper methods modeled after GraphKit for array copy
   void insert_mem_bar(Node** ctrl, Node** mem, int opcode, Node* precedent = NULL);
+	Node* index_to_bytes(Node* idx, BasicType element_type);
   Node* array_element_address(Node* ary, Node* idx, BasicType elembt);
   Node* ConvI2L(Node* offset);
   Node* make_leaf_call(Node* ctrl, Node* mem,
@@ -190,6 +194,11 @@ private:
                            Node* parm2);
   void extract_call_projections(CallNode *call);
 
+  Node* set_array_length(Node* arry, Node* length, Node* &control, Node* &memory);
+
+  Node* initialize_object_header(Node *control, Node *rawmem, Node *object,
+                                 Node *klass_node, Node *length, int& header_size);
+
   Node* initialize_object(AllocateNode* alloc,
                           Node* control, Node* rawmem, Node* object,
                           Node* klass_node, Node* length,
@@ -201,6 +210,10 @@ private:
                             Node* length);
 
   Node* make_arraycopy_load(ArrayCopyNode* ac, intptr_t offset, Node* ctl, BasicType ft, const Type *ftype, AllocateNode *alloc);
+
+  PhaseMacroExpand(PhaseIterGVN &igvn, PhaseNumber phase_number) : Phase(phase_number), _igvn(igvn), _has_locks(false) {
+    _igvn.set_delay_transform(true);
+  }
 
 public:
   PhaseMacroExpand(PhaseIterGVN &igvn) : Phase(Macro_Expand), _igvn(igvn), _has_locks(false) {

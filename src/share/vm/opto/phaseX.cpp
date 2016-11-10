@@ -1424,9 +1424,9 @@ void PhaseIterGVN::remove_globally_dead_node( Node *dead ) {
   } // while (_stack.is_nonempty())
 }
 
-//------------------------------subsume_node-----------------------------------
-// Remove users from node 'old' and add them to node 'nn'.
-void PhaseIterGVN::subsume_node( Node *old, Node *nn ) {
+//------------------------------move_outs-----------------------------------
+// Moves output nodes from 'old' to 'nn'
+void PhaseIterGVN::move_outs(Node *old, Node *nn) {
   assert( old != hash_find(old), "should already been removed" );
   assert( old != C->top(), "cannot subsume top node");
   // Copy debug or profile information to the new version:
@@ -1461,6 +1461,14 @@ void PhaseIterGVN::subsume_node( Node *old, Node *nn ) {
       }
     }
   }
+}
+//------------------------------subsume_node-----------------------------------
+// Remove users from node 'old' and add them to node 'nn'.
+void PhaseIterGVN::subsume_node( Node *old, Node *nn ) {
+  assert( old != hash_find(old), "should already been removed" );
+  assert( old != C->top(), "cannot subsume top node");
+
+  move_outs(old, nn);
 
   // Smash all inputs to 'old', isolating him completely
   Node *temp = new Node(1);

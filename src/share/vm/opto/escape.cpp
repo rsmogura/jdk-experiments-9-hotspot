@@ -382,6 +382,8 @@ void ConnectionGraph::add_node_to_connection_graph(Node *n, Unique_Node_List *de
   int opcode = n->Opcode();
   switch (opcode) {
     case Op_AddP: {
+      if (n->_idx == 345)
+        n->is_Load();
       Node* base = get_addp_base(n);
       PointsToNode* ptn_base = ptnode_adr(base->_idx);
       // Field nodes are created for all field types. They are used in
@@ -442,6 +444,18 @@ void ConnectionGraph::add_node_to_connection_graph(Node *n, Unique_Node_List *de
     case Op_LoadNKlass: {
       // Unknown class is loaded
       map_ideal_node(n, phantom_obj);
+      break;
+    }
+    case Op_LoadUS: {
+      const Type* t = _igvn->type(n);
+      Node* addr = NULL;
+      if (n->_idx == 345)
+        n->has_vector_mask_set();
+      assert(t->basic_type() <= T_LONG, "Should be primitive");
+      addr = n->in(TypeFunc::Memory);
+      PointsToNode* field = ptnode_adr(addr->_idx);
+      assert(field != NULL && !field->as_Field()->is_oop(), "Adding reference to primitive field");
+      add_local_var_and_edge(n, PointsToNode::NoEscape, addr, delayed_worklist);
       break;
     }
     case Op_LoadP:
@@ -616,6 +630,8 @@ void ConnectionGraph::add_final_edges(Node *n) {
   int opcode = n->Opcode();
   switch (opcode) {
     case Op_AddP: {
+      if (n->_idx == 345)
+        n->is_Load();
       Node* base = get_addp_base(n);
       PointsToNode* ptn_base = ptnode_adr(base->_idx);
       assert(ptn_base != NULL, "field's base should be registered");
@@ -644,6 +660,18 @@ void ConnectionGraph::add_final_edges(Node *n) {
         assert(ptn != NULL, "node should be registered");
         add_edge(n_ptn, ptn);
       }
+      break;
+    }
+    case Op_LoadUS: {
+      const Type* t = _igvn->type(n);
+      if (n->_idx == 474)
+        n->has_vector_mask_set();
+      Node* addr = NULL;
+      assert(t->basic_type() <= T_LONG, "Should be primitive");
+      addr = n->in(TypeFunc::Memory);
+      PointsToNode* field = ptnode_adr(addr->_idx);
+      assert(field != NULL && !field->as_Field()->is_oop(), "Adding reference to primitive field");
+      add_local_var_and_edge(n, PointsToNode::NoEscape, addr, NULL);
       break;
     }
     case Op_LoadP:

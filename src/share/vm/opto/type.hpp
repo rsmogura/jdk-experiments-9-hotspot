@@ -1777,8 +1777,10 @@ inline bool Type::is_ptr_to_boxing_obj() const {
 #define Op_URShiftX  Op_URShiftL
 // conversions
 #define ConvI2X(x)   ConvI2L(x)
+#define ConvI2XNode(x) ConvI2LNode(x)
 #define ConvL2X(x)   (x)
 #define ConvX2I(x)   ConvL2I(x)
+#define ConvX2INode(x) ConvL2INode(x)
 #define ConvX2L(x)   (x)
 #define ConvX2UL(x)  (x)
 
@@ -1822,11 +1824,12 @@ inline bool Type::is_ptr_to_boxing_obj() const {
 #define Op_URShiftX  Op_URShiftI
 // conversions
 #define ConvI2X(x)   (x)
+#define ConvI2XNodes(x) (x)
 #define ConvL2X(x)   ConvL2I(x)
 #define ConvX2I(x)   (x)
 #define ConvX2L(x)   ConvI2L(x)
 #define ConvX2UL(x)  ConvI2UL(x)
-
+#define ConvX2INode(x) ConvI2INode(x)
 #endif
 
 #endif // SHARE_VM_OPTO_TYPE_HPP

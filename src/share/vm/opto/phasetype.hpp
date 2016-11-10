@@ -39,6 +39,7 @@ enum CompilerPhaseType {
   PHASE_PHASEIDEALLOOP3,
   PHASE_CPP1,
   PHASE_ITER_GVN2,
+  PHASE_ELIMINATE_ARRAY_COPY,
   PHASE_PHASEIDEALLOOP_ITERATIONS,
   PHASE_OPTIMIZE_FINISHED,
   PHASE_GLOBAL_CODE_MOTION,
@@ -74,6 +75,7 @@ class CompilerPhaseTypeHelper {
       case PHASE_PHASEIDEALLOOP3:            return "PhaseIdealLoop 3";
       case PHASE_CPP1:                       return "PhaseCPP 1";
       case PHASE_ITER_GVN2:                  return "Iter GVN 2";
+      case PHASE_ELIMINATE_ARRAY_COPY:       return "Eliminate array copy";
       case PHASE_PHASEIDEALLOOP_ITERATIONS:  return "PhaseIdealLoop iterations";
       case PHASE_OPTIMIZE_FINISHED:          return "Optimize finished";
       case PHASE_GLOBAL_CODE_MOTION:         return "Global code motion";

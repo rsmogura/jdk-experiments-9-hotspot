@@ -368,6 +368,8 @@ protected:
   Node* raw_out(uint i) const { assert(i < _outcnt,"oob"); return _out[i]; }
   // Return the unique out edge.
   Node* unique_out() const { assert(_outcnt==1,"not unique"); return _out[0]; }
+  Node* unique_out_or_null() const { return  _outcnt == 1 ? _out[0] : NULL; }
+
   // Delete out edge at position 'i' by moving last out edge to position 'i'
   void  raw_del_out(uint i) {
     assert(i < _outcnt,"oob");
@@ -1089,6 +1091,7 @@ private:
 
 //----------------- Printing, etc
 public:
+  void add_outs_to_list(GrowableArray<Node*> &out);
 #ifndef PRODUCT
   Node* find(int idx) const;         // Search the graph for the given idx.
   Node* find_ctrl(int idx) const;    // Search control ancestors for the given idx.

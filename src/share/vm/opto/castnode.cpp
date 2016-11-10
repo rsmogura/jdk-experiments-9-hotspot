@@ -463,7 +463,8 @@ Node *CastX2PNode::Ideal(PhaseGVN *phase, bool can_reshape) {
 
 //------------------------------Identity---------------------------------------
 Node* CastX2PNode::Identity(PhaseGVN* phase) {
-  if (in(1)->Opcode() == Op_CastP2X)  return in(1)->in(1);
+  if (in(1)->Opcode() == Op_CastP2X)
+    return in(1)->in(1);
   return this;
 }
 
@@ -485,6 +486,10 @@ Node *CastP2XNode::Ideal(PhaseGVN *phase, bool can_reshape) {
 
 //------------------------------Identity---------------------------------------
 Node* CastP2XNode::Identity(PhaseGVN* phase) {
-  if (in(1)->Opcode() == Op_CastX2P)  return in(1)->in(1);
-  return this;
+  // 2nd if used by eliminate array copy
+  if (in(1)->Opcode() == Op_CastX2P &&
+          ((in(1)->as_ConstraintCast()->in(2))->Opcode() != Op_CheckCastPP))
+    return in(1)->in(1);
+  else
+    return this;
 }

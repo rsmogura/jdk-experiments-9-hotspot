@@ -25,6 +25,10 @@
 #include "precompiled.hpp"
 #include "opto/arraycopynode.hpp"
 #include "opto/graphKit.hpp"
+#include "opto/escape.hpp"
+#include "opto/rootnode.hpp"
+#include "opto/castnode.hpp"
+#include "opto/convertnode.hpp"
 
 ArrayCopyNode::ArrayCopyNode(Compile* C, bool alloc_tightly_coupled)
   : CallNode(arraycopy_type(), NULL, TypeRawPtr::BOTTOM),
@@ -709,3 +713,712 @@ bool ArrayCopyNode::modifies(intptr_t offset_lo, intptr_t offset_hi, PhaseTransf
   }
   return false;
 }
+
+bool ArrayCopyNode::Ideal_ArrayCopy(ArrayCopyNode* ac, Node*& input_ctrl, CatchProjNode*& out_control, ProjNode*& out_memory, ProjNode*& out_io) {
+  assert(ac, "");
+	input_ctrl = NULL;
+	out_control = NULL;
+	out_memory = out_io = NULL;
+	int out_ctrls = 0, out_mems = 0, out_ios = 0;
+
+	input_ctrl = ac->in(TypeFunc::Control);
+	if (!input_ctrl)
+		return false;
+
+	// Iterate over output edges to find
+  for (DUIterator i = ac->outs(); ac->has_out(i); i++) {
+    ProjNode* proj = ac->out(i)->isa_Proj();
+	  Node* out; // Helper
+
+    if (!proj)
+      continue;
+
+    if (proj->_con == TypeFunc::Control) {
+	    out = proj->unique_out_or_null();
+	    if (!out || !out->is_Catch())
+		    return false;
+	    CatchNode* catch_node = out->as_Catch();
+
+      // Go trough all catch projections to extract fall through control
+	    for (DUIterator_Fast imax, i = catch_node->fast_outs(imax); i < imax; i++) {
+        CatchProjNode* catch_proj = catch_node->fast_out(i)->isa_CatchProj();
+        if (!catch_proj) {
+          assert(catch_proj, "Should be catch");
+          return false;
+        }
+        if (catch_proj->_con == CatchProjNode::fall_through_index) {
+          out_control = catch_proj;
+	        out_ctrls++;
+        }
+      }
+    }else if (proj->_con == TypeFunc::Memory && !proj->_is_io_use){
+      out_memory = proj;
+	    out_mems++;
+    }else if (proj->_con == TypeFunc::I_O && !proj->_is_io_use){
+	    out_io = proj;
+	    out_ios++;
+    }
+  }
+
+	// Check how many controls has been found, it should be 1 for ideal copy
+	if (out_ctrls == 1 && out_mems == 1 && out_ios == 1) {
+		return true;
+	}else {
+		debug_only(input_ctrl = NULL; out_control = NULL; out_memory = out_io = NULL;);
+		return false;
+	}
+}
+
+void EliminateArrayCopyPhase::eliminate_all_array_copy() {
+
+  for (int i=0; i < C->macro_count(); i++) {
+    ArrayCopyNode* arrcpy = C->macro_node(i)->isa_ArrayCopy();
+    if (arrcpy)
+      eliminate_single_array_copy(arrcpy);
+  }
+}
+
+void EliminateArrayCopyPhase::set_src_length_with_membar(Node* len, Node* &current_control, Node* &current_mem) {
+	// And finish changes by setting new array length
+	set_array_length(arrcpy->in(ArrayCopyNode::Src), len, current_control, current_mem);
+
+	// Src can escape (if dst was escaping) new size has to be visible by other threads
+	// Doesn't need to care about concurrent scan, as it will just see previous array,
+	// and dummy array is not referenced anywhere
+	if (!C->congraph()->not_global_escape(arrcpy->in(ArrayCopyNode::Dest)))
+		insert_mem_bar(&current_control, &current_mem, Op_MemBarRelease);
+}
+
+bool EliminateArrayCopyPhase::eliminate_single_array_copy(ArrayCopyNode *arrcpy) {
+	this->arrcpy = arrcpy;
+
+  Node* src = arrcpy->in(ArrayCopyNode::Src);
+  Node* dst = arrcpy->in(ArrayCopyNode::Dest);
+  Node* src_pos = arrcpy->in(ArrayCopyNode::SrcPos);
+  Node* dst_pos = arrcpy->in(ArrayCopyNode::DestPos);
+	Node* src_len = arrcpy->in(ArrayCopyNode::SrcLen);
+	Node* dst_len = arrcpy->in(ArrayCopyNode::DestLen);
+
+  TypeNode* src_klass = arrcpy->in(ArrayCopyNode::SrcKlass)->as_Type();
+  TypeNode* dst_klass = arrcpy->in(ArrayCopyNode::DestKlass)->as_Type();
+
+  // Faster debug trap
+  const char* n = arrcpy->jvms()->method()->name()->as_utf8();
+  if (strcmp(C->method()->name()->as_utf8(), "sayHello4") == 0
+      || strcmp(C->method()->name()->as_utf8(), "start") == 0) {
+    arrcpy->jvms();
+  }
+	// No dest use before copy - this can be relaxed to check if array escapes
+	// in call before copy, modifications are, in theory, allowed as later we check if
+	// array copy length is same as dest length, so it would be overwritten in any awy
+	if (false || !arrcpy->is_alloc_tightly_coupled())
+		return false;
+
+  // Array must not escape
+  if (!C->congraph() || !C->congraph()
+          ->not_global_escape(src))
+    return false;
+
+  // Src and dest offsets have to be zero
+  if (_igvn.find_int_con(src_pos, -1) != 0 || _igvn.find_int_con(dst_pos, -1) != 0)
+    return false;
+
+  // Check source and destination klass
+  if ( !(src_klass->type()->isa_klassptr() &&
+			   dst_klass->type()->isa_klassptr() &&
+			   src_klass->type()->is_klassptr()->klass()->is_array_klass() &&
+			   dst_klass->type()->is_klassptr()->klass()->is_array_klass()) )
+	  //TODO Should handle be used to prevent unloading?
+    return false;
+
+  BasicType element_type = T_CONFLICT;
+  {
+    // Elements types should be primitive and same
+    ciArrayKlass *src_arr_klass = src_klass->type()->is_klassptr()->klass()->as_array_klass();
+    ciArrayKlass *dst_arr_klass = dst_klass->type()->is_klassptr()->klass()->as_array_klass();
+    element_type = src_arr_klass->base_element_type()->basic_type();
+
+	  // Element types must be same
+    if (!(element_type <= T_LONG && element_type == dst_arr_klass->base_element_type()->basic_type()))
+      return false;
+  }
+
+  // Would be true on many platforms, this implies (see later comment) that object alignment is multiplication
+	// of element size. Returns false for long[] on ancient 32 bit platforms.
+	const int element_sz_byte = type2aelembytes(element_type);
+  if (element_sz_byte > ObjectAlignmentInBytes)
+    return false;
+	assert(element_sz_byte < HeapWordSize && is_power_of_2(element_sz_byte) && is_power_of_2(ObjectAlignmentInBytes),
+	       "Right now should be");
+
+  Node* copy_len = arrcpy->in(ArrayCopyNode::Length);
+  AllocateArrayNode* dst_alloc = AllocateArrayNode::Ideal_array_allocation(dst, &_igvn);
+
+	AllocateArrayNode* allocateArrayNode = AllocateArrayNode::Ideal_array_allocation(dst, &_igvn);
+	if (!allocateArrayNode)
+		return false;
+
+  // Check if lengths matches - right now conseravtively, later can check if there is such a possibility
+  // and add run-time checks
+  //if ( !dst_alloc || dst_alloc->in(AllocateNode::ALength) != len )
+  //  return false;
+
+  // Extract Ideal allocation nodes
+  Node*          cpy_in_ctrl; // Not used
+  CatchProjNode* out_ctrl;
+  ProjNode*      out_mem;
+	ProjNode*      out_io;
+
+  if (!ArrayCopyNode::Ideal_ArrayCopy(arrcpy, cpy_in_ctrl, out_ctrl, out_mem, out_io))
+    return false;
+
+  GrowableArray<Node*> src_roots;
+  GrowableArray<Node*> usages;
+  Node_List helper_list;
+
+  if (!collect_array_allocations(src, src_roots))
+    return false;
+
+  // Collect roots, there can be more then one, in case of allocate bigger array, append loops
+  for (int j=0; j < src_roots.length(); j++) {
+    if (src_roots.at(j)->as_AllocateArray()->_is_scalar_replaceable)
+      return false;
+  }
+
+	// Collect array usages stopping at this array copy
+	helper.clear();
+	helper.append(arrcpy);
+	helper.append(allocateArrayNode);
+	helper.append(allocateArrayNode->initialization());
+
+  if (!collect_array_usages(src_roots, helper, usages))
+      return false;
+
+  // Check if usages are NOT after array copy
+  for (int i=0; i < usages.length(); i++) {
+    Node* use = usages.at(i);
+		// Check if any array usage can get control from this arrcpy
+	  // If yes this means that if src <- dest (no copy), and dest is read
+	  // or modified then read of src can get, set modified content
+	  // This check includes ass well all arg stack and local arguments
+	  helper.clear();
+	  if (use != arrcpy && find_parent_skip_alloc(use, arrcpy->_idx, src_roots, helper)) {
+		  tty->print("ArrayCopyElimination: FAIL: Node reaches array copy: ");
+		  use->dump_comp();
+		  return false;
+	  }
+		debug_only(assert_reaches_root(use, dst));
+  }
+
+	if (!arrcpy->is_alloc_tightly_coupled()) {
+		// Should check if array escapes to make more generic
+		return false;
+	}
+
+  if (!dst->is_CheckCastPP()) {
+    assert(false, "Should be CheckCastPP for tightly coupled allocations");
+    return false;
+  }
+
+	tty->print("ArrayCopyElimination: SUCCESS: Graph valid, performing reshaping at ");
+	arrcpy->dump();
+
+	// Perform actual reshaping, now there is no point back
+
+	// Update src escape state so later expansions will insert proper barriers
+	for (int i=0; i < src_roots.length(); i++)
+		src_roots.at(i)->as_AllocateArray()->_is_non_escaping = allocateArrayNode->_is_non_escaping;
+
+  // If len is visible at allocation, it's passed as stack, and probably we can eliminate allocation, too.
+	// Can we?
+	// TODO Check this approach later
+
+	this->eliminated = arrcpy;
+
+	Node *start_ctl, *start_mem;
+	start_ctl = eliminated->in(TypeFunc::Control);
+	start_mem = eliminated->in(TypeFunc::Memory);
+
+	// Separate eliminated node(s)
+	separate_eliminated_nodes(out_ctrl, out_mem, out_io);
+
+	// Local variables to track control and mem
+	Node* current_control;
+	Node* current_mem     = start_mem;
+
+	// Insert first check if copy len == dest len, it's not always true, see Arrays.copyOf and min
+	// inside to get real-life example
+	{
+		assert(dst_len->bottom_type()->basic_type() == T_INT && copy_len->bottom_type()->basic_type() == T_INT,
+		       "Should be ints");
+		Node     *same_lenghts_cmp   = transform_later(new CmpINode(dst_len, copy_len));
+		BoolNode *same_lenshts_bool  = transform_later(new BoolNode(same_lenghts_cmp, BoolTest::eq));
+		Node *yes, *no;
+		make_if(start_ctl, same_lenshts_bool, yes, no);
+		slow_path->set_req(RegionNode::Control + 0, no);
+		current_control = yes;
+	}
+
+	// Check if src array can be truncated, there are three cases:
+	//
+	// (1) copy_length and src_length are same          -> pass array
+	// (2) src_length - copy_length >= object alignment -> change source length, as 'truncated' src still
+	//                                                  -> fits into heap object alignment
+	// (3) src is big enough to hold new array header   -> install new header, so GC is happy
+	//                                                     and truncate src
+	//
+	// There is one more possible case, to insert empty Object(), but let's skip this corner
+	// case, right now.
+	//
+	// (2) & (1) is folded into one case, as aligning src_len and cpy_len handles boths
+	// and calculations of (2) & (1) can be input to (3)
+	//
+	// Evaluation is performed on 64bit integers, so there is no possibility of overflow
+	//
+	// We assumed element size is less than min object alignment, and min object alignment
+	// is greater or equal HeapWordSize. All have to be power of 2.
+	// Array header is HeapWordSize aligned, so array header is multiplication of element size,
+	// same "object alignment". Source is by default aligned, so everything can be expressed
+	// in terms of array elements.
+	//
+	// And below calculations are correct, and we can divide (or shift for performance reasons)
+	// Really? Studies were long time ago... and it was math...
+	//
+	// Additionally, we are in if dst len == copy len, and probably one of it is compile time const
+	// so optimiser can do nice constant folding.
+
+	int   element_sz_log        = exact_log2(element_sz_byte);
+	Node* element_sz_log_node_i = transform_later(ConINode::make(element_sz_log));
+	Node* element_sz_log_node_l = transform_later(ConLNode::make(element_sz_log));
+
+	Node* elements_per_align    = transform_later(new RShiftLNode(
+          transform_later(ConLNode::make(ObjectAlignmentInBytes)), element_sz_log_node_i));
+	Node* elements_per_header   = transform_later(new RShiftLNode(
+          transform_later(ConLNode::make(arrayOopDesc::base_offset_in_bytes(element_type))), element_sz_log_node_i));
+
+	Node* src_len_aligned = alignx_up_log(transform_later(new ConvI2LNode(src_len)),  elements_per_align);
+	Node* tail_start      = alignx_up_log(transform_later(new ConvI2LNode(copy_len)), elements_per_align);
+
+	int final_slot = RegionNode::Control + 1; // First slots occupied by slow path
+
+	// case (2) & (1) - if src_len_aligned - tail_start == 0, both arrays ends
+	// at same "aligned" heap object, so free to set new lenght
+	{
+		Node *same_align_cmp      = transform_later(new CmpLNode(src_len_aligned, tail_start));
+		BoolNode *same_align_bool = transform_later(new BoolNode(same_align_cmp, BoolTest::eq))->as_Bool();
+		Node *yes, *no;
+		make_if(current_control, same_align_bool, yes, no);
+
+		// Not same, right now move back
+		slow_path->set_req(RegionNode::Control + 1, no);
+
+		// Same, update length, and connect final outputs
+		current_control = yes;
+		set_src_length_with_membar(copy_len, current_control, current_mem);
+		final_ctl->set_req(final_slot, current_control);
+		final_mem->set_req(final_slot, current_mem);
+		final_io ->set_req(final_slot, eliminated->in(TypeFunc::I_O));
+		final_arr->set_req(final_slot, arrcpy->in(ArrayCopyNode::Src));
+		final_slot++;
+
+		_igvn.set_delay_transform(false);
+		_igvn.transform(allocateArrayNode);
+		_igvn.transform(arrcpy);
+		_igvn.transform(out_ctrl);
+		_igvn.transform(out_mem);
+
+		current_control = yes;
+		return true;
+	}
+
+	// Start case (3)
+	// The new array will fit without touching next object (or free space) iff
+	// src + (copy_len + len_align) + header_sz < src_len + src_len_align, where
+	// src_len_align is additional elements of src which can be put into object space,
+	// tail_start <= (copy_len + len_align), and
+	// len_align may be != src_len_align
+
+  Node* tail_size = transform_later(new SubLNode(src_len_aligned, tail_start));
+	      tail_size = transform_later(new SubLNode(tail_size, elements_per_header));
+
+	// All calculations are 64 bit wide, so overflow can't happen as lengths are 32 bit wide
+	// TODO Is above really true form hotspot perspective ?
+
+	// if tail_size < 0, source is not big enough to carry even empty array
+
+  // Garbage Collector Destroyer
+  // tail_size = transform_later(new AddINode(tail_size, transform_later(ConINode::make(1))));
+
+
+
+	// Need to calculate this way, instead of tail_addr  = array_element_address(src, tail_start, element_type), as
+	// new CastPPNode(src, TypeOopPtr::BOTTOM), nor new CastX2PNode(new CastP2XNode(current_control, src))
+	// doesn't work, 2nd returns source identity
+	int header_size = -1; // Not used, helper
+	Node* tail_addr;
+	tail_addr = transform_later(new CastP2XNode(current_control, src));
+	tail_addr = transform_later(new AddXNode(tail_addr,
+	                                         transform_later(new LShiftXNode(tail_start, element_sz_log_node_i))));
+  tail_addr = transform_later(new CastX2PNode(tail_addr));
+	current_mem       = initialize_object_header(current_control, current_mem, tail_addr, arrcpy->in(ArrayCopyNode::SrcKlass), tail_size, header_size);
+	// Ensure header is seen before new size
+	insert_mem_bar(&current_control, &current_mem, Op_MemBarRelease);
+
+	// And finish changes by setting new array length
+	set_src_length_with_membar(tail_start, current_control, current_mem);
+
+	MergeMemNode* final_merge = transform_later(MergeMemNode::make(start_mem));
+	int alias_idx = C->get_alias_index(final_phi_addr);
+	final_merge->set_memory_at(alias_idx, current_mem);
+	current_mem = final_merge;
+
+
+
+  // Now we have to replace all dest edges with Phi, expect this copy
+  // Could be done with replace edge but additional validation is warm welcome
+
+
+
+//
+//	_igvn.add_users_to_worklist(start_ctl);
+
+	//_igvn.set_delay_transform(true);
+	//arrcpy->dump();
+////	for (DUIterator_Last imin, i = out_ctrl->last_outs(imin); i >= imin; --i) {
+////		Node* n = out_ctrl->last_out(i);
+////		_igvn.hash_delete(n);
+////		n->replace_edge(out_ctrl, final_ctl);
+////	}
+//	_igvn.add_users_to_worklist(final_ctl);
+//	_igvn.add_users_to_worklist(out_ctrl->in(TypeFunc::Control));
+//
+//	// Replace original out current_mem with final_mem
+//	for (DUIterator_Last imin, i = out_mem->last_outs(imin); i >= imin; --i) {
+//		Node* n = out_mem->last_out(i);
+//		_igvn.hash_delete(n);
+//		n->replace_edge(out_mem, final_mem);
+//	}
+//	_igvn.add_users_to_worklist(final_mem);
+//	_igvn.add_users_to_worklist(final_mem->in(TypeFunc::Control));
+//
+//	final_mem->set_req(1, out_mem);
+//	final_mem->set_req(2, arrcpy->in(TypeFunc::Memory));
+//	final_mem->set_req(3, arrcpy->in(TypeFunc::Memory));
+//
+//	final_ctl->set_req(1, out_ctrl);
+//	final_mem->set_req(1, out_mem);
+//
+//	// Generates base check dst len == cpy len
+//	generate_lengths_same_checks(orignal_control);
+//
+//	_igvn.transform(allocateArrayNode);
+
+
+
+  // (1) copy_length == src_length
+//  CmpINode*    leneq_cmp   = transform_later(new CmpINode(arrcpy->in(ArrayCopyNode::SrcLen), len));
+//  BoolNode*    leneq_bool  = transform_later(new BoolNode(leneq_cmp, BoolTest::eq));
+//  IfNode*      leneq_if    = transform_later(new IfNode(this->lengths_same_true, leneq_bool, PROB_FAIR, COUNT_UNKNOWN));
+//  IfTrueNode*  leneq_true  = transform_later(new IfTrueNode(leneq_if));
+//  IfFalseNode* leneq_false = transform_later(new IfFalseNode(leneq_if));
+
+  // (3) src_length - minimum array size > copy_length
+  // Need to check if src has enough space to put array header
+  // Transform minimum array size to destination elements count
+  // And check if src_len - min_elements <= copy length
+  // TODO For smaller sizes Object can be put to avoid extra bytes for array length
+  // TODO Add negative and overflow checks (are those needed?)
+//
+
+//  ConINode*    min_elements_const = transform_later(ConINode::make(min_elements));
+//  SubINode*    min_len_subtract   = transform_later(new SubINode(arrcpy->in(ArrayCopyNode::SrcLen), min_elements_const));
+//  CmpINode*    min_len_comp       = transform_later(new CmpINode(min_len_subtract, len));
+//  BoolNode*    min_len_bool       = transform_later(new BoolNode(min_len_comp, BoolTest::ge));
+//  IfNode*      min_len_if         = transform_later(new IfNode(leneq_false, min_len_bool, PROB_FAIR, COUNT_UNKNOWN));
+//  IfTrueNode*  min_len_true       = transform_later(new IfTrueNode(min_len_if));
+//  IfFalseNode* min_len_false      = transform_later(new IfFalseNode(min_len_if));
+
+  // Connect final "slow(er) path"
+//  out_ctrl->replace_by(region);
+//  region->set_req(1, out_ctrl);
+//
+//  for (DUIterator i = region->outs(); region->has_out(i); i++) {
+//    transform_list.append(region->out(i));
+//  }
+//
+//  for (int i=0; i < transform_list.length(); i++) {
+//    _igvn.transform(transform_list.at(i));
+//  }
+
+//  _igvn.transform(out_ctrl);
+
+  //region->set_req(1, iff_true);
+  //arrcpy->set_req(TypeFunc::Control, region);
+
+//  Node *frame1 = transform_later(new ParmNode( C->start(), TypeFunc::FramePtr ));
+//  Node *halt1 = transform_later(new HaltNode(leneq_true, frame1));
+//  C->root()->add_req(halt1);
+//  Node *frame2 = transform_later(new ParmNode( C->start(), TypeFunc::FramePtr ));
+//  Node *halt2 = transform_later(new HaltNode(min_len_true, frame2));
+//  C->root()->add_req(halt2);
+//  halt2->dump();
+//
+//  arrcpy->replace_by(ac2);
+
+//  _igvn.transform(arrcpy);
+
+  return true;
+
+}
+
+void EliminateArrayCopyPhase::separate_eliminated_nodes(Node *out_control, Node *out_memory, Node *out_io) {
+	// Insert slow path region to gather control if length check fails and connect eliminated nodes
+	// to it
+	const int final_slots = 2;
+	slow_path = transform_later(new RegionNode(final_slots + 1));
+	eliminated->set_req(TypeFunc::Control, slow_path);
+
+	// Create final control region and final memory, io and val Phi nodes
+	final_phi_addr = TypeRawPtr::BOTTOM;
+	final_ctl      = transform_later(new RegionNode(final_slots + 1)); // Bottom 'surround' to gether checks
+	final_mem      = transform_later(new PhiNode(final_ctl, Type::MEMORY, final_phi_addr));
+	final_io       = transform_later(new PhiNode(final_ctl, Type::ABIO));
+	final_arr      = transform_later(new PhiNode(final_ctl, arrcpy->in(ArrayCopyNode::Dest)->Value(&_igvn)));
+
+	// Make finals phi big enaugh
+	Node* top = C->top();
+	final_ctl->ins_req(final_slots, top);
+	final_mem->ins_req(final_slots, top);
+	final_io ->ins_req(final_slots, top);
+	final_arr->ins_req(final_slots, top);
+
+	// Replace original out control & memory with final control & memory
+	_igvn.insert_after(out_control, final_ctl);
+	final_ctl->set_req(1, out_control);
+
+	_igvn.insert_after(out_memory, final_mem);
+	final_mem->set_req(1, out_memory);
+
+	_igvn.insert_after(out_io, final_io);
+	final_io->set_req(1, out_io);
+
+	// Add dest switch. Some of dest edges goes to array copy, and still should go, the purpose of separation
+	// is to conditionally switch src / dest, but control still can reach array copy.
+
+	Node* dest = arrcpy->in(ArrayCopyNode::Dest);
+	_igvn.insert_after(arrcpy->in(ArrayCopyNode::Dest), final_arr);
+
+	// Insertion set array copy dest to final_arr, this would crate broken flow
+	// Set back array copy destination
+	int count = arrcpy->replace_edge(final_arr, dest);
+	if (count != 2) {
+		assert(count == 2, "Argument + stack == 2");
+		C->record_failure("Unexpected usages of array copy destination. Expected 2");
+	}
+  final_arr->set_req(1, dest);
+}
+
+void EliminateArrayCopyPhase::generate_lengths_same_checks(Node *control) {
+	CmpINode*    cantrunk_cmp   = transform_later(new CmpINode(arrcpy->in(ArrayCopyNode::DestLen), arrcpy->in(ArrayCopyNode::Length)));
+	BoolNode*    cantrunk_bool  = transform_later(new BoolNode(cantrunk_cmp, BoolTest::eq));
+	make_if(control, cantrunk_bool, lengths_same_true, lengths_same_false);
+}
+
+bool EliminateArrayCopyPhase::collect_array_allocations(Node *start, GrowableArray<Node *> &roots) {
+  GrowableArray<Node*> work_list;
+  work_list.append(start);
+
+  bool roots_valid = true;
+  for (int i=0; i < work_list.length(); i++) {
+    Node* n = work_list.at(i);
+    switch(n->Opcode()) {
+      case Op_Phi: {
+        // Put all inputs to worklist
+        PhiNode *phi = n->as_Phi();
+        for (uint i = PhiNode::Input; i < phi->req(); i++)
+          work_list.append_if_missing(phi->in(i));
+        break;
+      }
+
+      case Op_CheckCastPP: {
+        CheckCastPPNode *check_cast = n->as_CheckCastPP();
+        ProjNode *proj = check_cast->in(1)->isa_Proj();
+        if (proj) {
+          AllocateArrayNode* alloc = proj->in(0)->as_AllocateArray();
+          if (alloc)
+            roots.append_if_missing(alloc);
+          else
+            roots_valid = false;
+        }else {
+          roots_valid = false;
+        }
+        break;
+      }
+
+      default:
+        roots_valid = false;
+    }
+  }
+
+  return roots_valid;
+}
+
+bool EliminateArrayCopyPhase::collect_array_usages(GrowableArray<Node *> &roots, GrowableArray<Node *> &accepted, GrowableArray<Node*> &usages) {
+  GrowableArray<Node*> &work_list = helper;
+  for (int i = 0; i < roots.length(); i++) {
+    Node *root = roots.at(i);
+    int found_check_casts = 0;
+    for (DUIterator j = root->outs(); root->has_out(j); j++) {
+      if (ProjNode *proj = root->out(j)->isa_Proj()) {
+        if (proj->_con == TypeFunc::Parms) {
+          for (DUIterator k = proj->outs(); proj->has_out(k); k++) {
+            Node* out = proj->out(k);
+
+            if (out->is_CheckCastPP()) {
+              work_list.append_if_missing(out);
+              found_check_casts++;
+            }else if (out->is_Initialize()) {
+              // skip
+            }else {
+              return false;
+            }
+          }
+        }
+      } else {
+        return false;
+      }
+    }
+    if (found_check_casts != 1)
+      return false;
+  }
+
+  for (int i=0; i < work_list.length(); i++) {
+    Node *n = work_list.at(i);
+
+    bool invalid = false;
+		const Node* top = C->top();
+
+	  int opcode = n->Opcode();
+		Node* in_control = n->in(TypeFunc::Control);
+
+    switch(opcode) {
+	    case Op_AddP:
+	    case Op_LoadB:
+	    case Op_LoadUB:
+	    case Op_LoadS:
+	    case Op_LoadUS:
+	    case Op_LoadI:
+	    case Op_LoadL:
+	    case Op_LoadF:
+	    case Op_LoadD:
+	    case Op_AndI:
+	    case Op_AndL:
+	    case Op_CmpF:
+	    case Op_CmpI:
+	    case Op_CmpL:
+	    case Op_CmpD:
+	    case Op_Bool:
+	    case Op_URShiftL:
+	    case Op_URShiftI:
+	    case Op_ConvI2L:
+	    case Op_ConvI2F:
+	    case Op_ConvI2D:
+	    case Op_ConvL2I:
+	    case Op_ConvL2F:
+	    case Op_ConvL2D:
+	    case Op_ConvF2I:
+	    case Op_ConvF2L:
+	    case Op_ConvF2D:
+	    case Op_ConvD2I:
+	    case Op_ConvD2L:
+	    case Op_ConvD2F:{
+		    // Shifts, ands are often used in [].hashCode()
+		    if (in_control != NULL && in_control != top) {
+			    usages.append_if_missing(n);
+		    }
+		    // Always append outs, as those can be base for later calculations
+		    n->add_outs_to_list(work_list);
+		    break;
+	    }
+	    case Op_If:
+	    case Op_Phi:
+	    case Op_StoreB:
+	    case Op_StoreC:
+	    case Op_StoreI:
+	    case Op_StoreL:
+	    case Op_StoreF:
+	    case Op_StoreD: {
+		    if (in_control != NULL && in_control != top) {
+			    usages.append_if_missing(n);
+		    }else {
+			    assert(false, "Store should have control");
+		    }
+		    break;
+	    }
+	    case Op_CheckCastPP:
+		    n->add_outs_to_list(work_list);
+		    break;
+	    case Op_CallStaticJava:
+		    //TODO Call can return src, if passed as argument - need more elaboration
+		    usages.append_if_missing(n);
+		    break;
+	    default:
+		    if (!accepted.contains(n))
+		      invalid = true;
+    }
+
+    if (invalid) {
+      tty->print("ArrayCopyElimination: Unexpected node for usage analyse: ");
+      n->dump_comp("\n", tty);
+      return false;
+    }
+  }
+  return true;
+}
+
+Node* EliminateArrayCopyPhase::find_parent_skip_alloc(Node *sub, node_idx_t idx, GrowableArray<Node *> &stop_on,
+                                                    GrowableArray<Node *> &helper) {
+	Node* result = NULL;
+
+	if (NotANode(sub) || sub->is_Root() || helper.contains(sub) || stop_on.contains(sub))
+		return NULL;
+
+	helper.append(sub);
+
+	if (sub->_idx == idx)
+		return sub;
+
+	if (sub->is_Region()) {
+		for (uint i=1; i < sub->req(); i++) {
+			result = find_parent_skip_alloc(sub->in(i), idx, stop_on, helper);
+			if (result)
+				break;
+		}
+	}else if (sub->is_CFG() || sub->is_Store() || sub->is_Call() || sub->is_Load() ||
+					  sub->is_CheckCastPP() || sub->is_Initialize() || sub->is_Catch() ||
+					  sub->is_Phi()) {
+		result = find_parent_skip_alloc(sub->in(TypeFunc::Control), idx, stop_on, helper);
+	}else if (sub->is_Proj() && sub->as_Proj()->_con == TypeFunc::Control) {
+		result = find_parent_skip_alloc(sub->in(TypeFunc::Control), idx, stop_on, helper);
+	}else {
+		tty->print("EliminateArrayCopy: Unexpected node when finding control: ");
+		sub->dump();
+		return sub;
+	}
+
+	return result;
+}
+
+#ifdef ASSERT
+void EliminateArrayCopyPhase::assert_reaches_root(Node* use, Node* dst) {
+	// Is this check needed, does tight alloc guarants this
+	for (DUIterator i; dst->has_out(i); i++) {
+		Node *use = dst->out(i);
+		if (use != arrcpy && use->is_CFG()) {
+			helper.clear();
+			assert(find_parent_skip_alloc(use, arrcpy->_idx, helper2, helper) == arrcpy,
+			       "Every use should be after copy");
+		}
+	}
+}
+#endif

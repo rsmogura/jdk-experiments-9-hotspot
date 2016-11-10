@@ -35,6 +35,7 @@
 #include "compiler/oopMap.hpp"
 #include "memory/resourceArea.hpp"
 #include "opto/addnode.hpp"
+#include "opto/arraycopynode.hpp"
 #include "opto/block.hpp"
 #include "opto/c2compiler.hpp"
 #include "opto/callGenerator.hpp"
@@ -2219,6 +2220,15 @@ void Compile::Optimize() {
     print_method(PHASE_ITER_GVN_AFTER_EA, 2);
 
     if (failing())  return;
+    {
+      TracePhase tp("arrayCopyElimination", &timers[_t_arrayCopyElimination]);
+      EliminateArrayCopyPhase eliminateArrCopy(C, igvn);
+      eliminateArrCopy.eliminate_all_array_copy();
+
+      // TODO Commented out to see intermediate results
+      igvn.optimize();
+      print_method(PHASE_ELIMINATE_ARRAY_COPY, 2);
+    }
 
     if (congraph() != NULL && macro_count() > 0) {
       TracePhase tp("macroEliminate", &timers[_t_macroEliminate]);

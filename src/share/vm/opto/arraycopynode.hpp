@@ -26,6 +26,7 @@
 #define SHARE_VM_OPTO_ARRAYCOPYNODE_HPP
 
 #include "opto/callnode.hpp"
+#include "opto/macro.hpp"
 
 class GraphKit;
 
@@ -165,9 +166,83 @@ public:
   static bool may_modify(const TypeOopPtr *t_oop, MemBarNode* mb, PhaseTransform *phase, ArrayCopyNode*& ac);
   bool modifies(intptr_t offset_lo, intptr_t offset_hi, PhaseTransform* phase, bool must_modify);
 
+	/// Matches ideal Array Copy, when not match output arguments may be clobbered
+	/// @return true if pattern matches
+  static bool Ideal_ArrayCopy(ArrayCopyNode* ac, Node*& input_ctrl, CatchProjNode*& out_control, ProjNode*& out_memory, ProjNode*& out_io);
 #ifndef PRODUCT
   virtual void dump_spec(outputStream *st) const;
   virtual void dump_compact_spec(outputStream* st) const;
 #endif
+};
+
+class EliminateArrayCopyPhase : public PhaseMacroExpand {
+private:
+    ArrayCopyNode* arrcpy;
+
+    Node* lengths_same_true;
+    Node* lengths_same_false;
+
+    /// Which node is eliminated (may not be arrcpy, but dst allocation)
+    Node* eliminated;
+
+    /// The type of output phi
+    const TypePtr* final_phi_addr;
+
+    /// Top region to gather slow paths, when generated checks fails
+    Node* slow_path;
+
+    /// Bottom region used to gather control paths, for slow and fast regions. First input is arrcpy (slow path)
+    Node* final_ctl;
+
+    /// Bottom phi selecting memory basing on checks control path (final_ctl), for slow and fast regions
+    Node*    final_mem;
+
+    /// Bottom phi selecting i/o basing on checks control path (final_ctl), for slow and fast regions
+    Node*    final_io;
+
+    /// Bottom phi selecting array basing on checks control path (final_ctl), for slow and fast regions
+    Node*    final_arr;
+
+    /// Helper variables, kept here to reduce memory pressure when array grows
+    GrowableArray<Node*> helper, helper2;
+
+    template<typename N> N* transform_later(N* n) {
+      // equivalent to _gvn.transform in GraphKit, Ideal, etc.
+      _igvn.register_new_node_with_optimizer(n);
+      return n;
+    }
+protected:
+		// Generate check if dst length equals copy length
+    void  generate_lengths_same_checks(Node *control);
+
+    void  generate_need_new_array_checks(Node* control);
+
+    void separate_eliminated_nodes(Node *out_control, Node *out_memory, Node *out_io);
+
+    void set_src_length_with_membar(Node* len, Node* &current_control, Node* &current_mem);
+
+		debug_only(void assert_reaches_root(Node* use, Node* dst));
+public:
+    EliminateArrayCopyPhase(Compile* C, PhaseIterGVN &igvn) :
+            PhaseMacroExpand(igvn, Eliminate_Array_Copy) {
+
+    }
+
+    void eliminate_all_array_copy();
+    bool eliminate_single_array_copy(ArrayCopyNode* arrcpy);
+
+    /// For given node collects all array allocations (there can be more than one, it's phi)
+    static bool collect_array_allocations(Node *start, GrowableArray<Node*> &roots);
+
+    /// Collects all array usages
+    /// @param accepted nodes which are accepted and not traversed
+    /// @return false if unexpected nodes has been been found
+    bool collect_array_usages(GrowableArray<Node *> &roots, GrowableArray<Node *> &accepted, GrowableArray<Node*> &usages);
+
+    /// Searches for control node with idx, stopping at stop_on.
+    /// @param helper node list used to prevent circular travers
+    static Node* find_parent_skip_alloc(Node* sub, node_idx_t idx, GrowableArray<Node *> &stop_on, GrowableArray<Node *> &helper);
+
+
 };
 #endif // SHARE_VM_OPTO_ARRAYCOPYNODE_HPP

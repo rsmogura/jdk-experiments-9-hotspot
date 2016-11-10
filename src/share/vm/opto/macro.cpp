@@ -1795,15 +1795,16 @@ void PhaseMacroExpand::expand_allocate_common(
   // This completes all paths into the result merge point
 }
 
-
-// Helper for PhaseMacroExpand::expand_allocate_common.
-// Initializes the newly-allocated storage.
 Node*
-PhaseMacroExpand::initialize_object(AllocateNode* alloc,
-                                    Node* control, Node* rawmem, Node* object,
-                                    Node* klass_node, Node* length,
-                                    Node* size_in_bytes) {
-  InitializeNode* init = alloc->initialization();
+PhaseMacroExpand::set_array_length(Node* arry, Node* length, Node* &control, Node* &memory) {
+  Node* result = make_store(control, memory, arry, arrayOopDesc::length_offset_in_bytes(), length, T_INT);
+  memory = result;
+  return result;
+}
+
+Node*
+PhaseMacroExpand::initialize_object_header(Node *control, Node *rawmem, Node *object,
+                                           Node *klass_node, Node *length, int& header_size) {
   // Store the klass & mark bits
   Node* mark_node = NULL;
   // For now only enable fast locking for non-array types
@@ -1813,19 +1814,31 @@ PhaseMacroExpand::initialize_object(AllocateNode* alloc,
     mark_node = makecon(TypeRawPtr::make((address)markOopDesc::prototype()));
   }
   rawmem = make_store(control, rawmem, object, oopDesc::mark_offset_in_bytes(), mark_node, T_ADDRESS);
-
   rawmem = make_store(control, rawmem, object, oopDesc::klass_offset_in_bytes(), klass_node, T_METADATA);
-  int header_size = alloc->minimum_header_size();  // conservatively small
-
-  // Array length
   if (length != NULL) {         // Arrays need length field
-    rawmem = make_store(control, rawmem, object, arrayOopDesc::length_offset_in_bytes(), length, T_INT);
+    rawmem = set_array_length(object, length, control, rawmem);
     // conservatively small header size:
     header_size = arrayOopDesc::base_offset_in_bytes(T_BYTE);
     ciKlass* k = _igvn.type(klass_node)->is_klassptr()->klass();
     if (k->is_array_klass())    // we know the exact header size in most cases:
       header_size = Klass::layout_helper_header_size(k->layout_helper());
   }
+
+  return rawmem;
+}
+
+// Helper for PhaseMacroExpand::expand_allocate_common.
+// Initializes the newly-allocated storage.
+Node*
+PhaseMacroExpand::initialize_object(AllocateNode* alloc,
+                                    Node* control, Node* rawmem, Node* object,
+                                    Node* klass_node, Node* length,
+                                    Node* size_in_bytes) {
+
+  InitializeNode* init = alloc->initialization();
+  int header_size = alloc->minimum_header_size();
+
+  rawmem = initialize_object_header(control, rawmem, object, klass_node, length, header_size);
 
   // Clear the object body, if necessary.
   if (init == NULL) {

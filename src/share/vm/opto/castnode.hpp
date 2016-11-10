@@ -59,6 +59,13 @@ class ConstraintCastNode: public TypeNode {
 #endif
 };
 
+//class Cast2RawNode: public ConstraintCastNode {
+//public:
+//    CastIINode(Node* n, const Type* t, bool carry_dependency = false, bool range_check_dependency = false)
+//    : ConstraintCastNode(n, t, carry_dependency), _range_check_dependency(range_check_dependency) {
+//            init_class_id(Class_CastII);
+//    }
+//};
 //------------------------------CastIINode-------------------------------------
 // cast integer to integer (different range)
 class CastIINode: public ConstraintCastNode {

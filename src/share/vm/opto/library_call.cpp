@@ -36,6 +36,7 @@
 #include "opto/callGenerator.hpp"
 #include "opto/castnode.hpp"
 #include "opto/cfgnode.hpp"
+#include "opto/escape.hpp"
 #include "opto/convertnode.hpp"
 #include "opto/countbitsnode.hpp"
 #include "opto/intrinsicnode.hpp"

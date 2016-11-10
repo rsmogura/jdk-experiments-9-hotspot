@@ -1545,6 +1545,11 @@ Node* find_node(Node* n, int idx) {
   return n->find(idx);
 }
 
+void Node::add_outs_to_list(GrowableArray<Node*>& out) {
+  for (node_idx_t i=0; i < _outcnt; i++)
+    out.append_if_missing(_out[i]);
+}
+
 //------------------------------find-------------------------------------------
 Node* Node::find(int idx) const {
   ResourceArea *area = Thread::current()->resource_area();

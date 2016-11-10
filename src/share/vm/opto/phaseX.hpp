@@ -438,6 +438,9 @@ private:
   // Idealize old Node 'n' with respect to its inputs and its value
   virtual Node *transform_old( Node *a_node );
 
+  // Moves output nodes from 'src' to 'dest'
+  void move_outs( Node *src, Node *dest );
+
   // Subsume users of node 'old' into node 'nn'
   void subsume_node( Node *old, Node *nn );
 
@@ -510,6 +513,14 @@ public:
     add_users_to_worklist(old);
     hash_delete(old); // Yank from hash before hacking edges
     subsume_node(old, nn);
+  }
+
+  // Insert node 'nn' after 'node' - inputs of 'node' stay unconected
+  void insert_after( Node *node, Node *nn ) {
+    add_users_to_worklist(node);
+    hash_delete(node); // Yank from hash before hacking edges
+    move_outs(node, nn);
+    hash_insert(node);
   }
 
   // Delayed node rehash: remove a node from the hash table and rehash it during

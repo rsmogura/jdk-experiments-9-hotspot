@@ -30,6 +30,13 @@
 #include "opto/macro.hpp"
 #include "opto/runtime.hpp"
 
+IfNode* PhaseMacroExpand::make_if(Node *control, Node *check, Node *&out_true, Node *&out_false) {
+  IfNode*  if_node = transform_later(new IfNode(control, check, PROB_FAIR, COUNT_UNKNOWN))->as_If();
+  out_true         = transform_later(new IfTrueNode(if_node));
+  out_false        = transform_later(new IfFalseNode(if_node));
+
+  return if_node;
+}
 
 void PhaseMacroExpand::insert_mem_bar(Node** ctrl, Node** mem, int opcode, Node* precedent) {
   MemBarNode* mb = MemBarNode::make(C, opcode, Compile::AliasIdxBot, precedent);
@@ -41,6 +48,10 @@ void PhaseMacroExpand::insert_mem_bar(Node** ctrl, Node** mem, int opcode, Node*
   Node* mem_proj = new ProjNode(mb,TypeFunc::Memory);
   transform_later(mem_proj);
   *mem = mem_proj;
+}
+
+Node* PhaseMacroExpand::index_to_bytes(Node *idx, BasicType element_type) {
+	return transform_later(new LShiftXNode(idx, intcon(exact_log2(type2aelembytes(element_type)))));
 }
 
 Node* PhaseMacroExpand::array_element_address(Node* ary, Node* idx, BasicType elembt) {
@@ -56,6 +67,27 @@ Node* PhaseMacroExpand::array_element_address(Node* ary, Node* idx, BasicType el
   Node* scale = new LShiftXNode(idx, intcon(shift));
   transform_later(scale);
   return basic_plus_adr(ary, base, scale);
+}
+
+Node* PhaseMacroExpand::alignx_up_log(Node* addr, Node* size) {
+  assert(size->find_int_con(-1) == -1 || is_power_of_2(size->find_int_con(-1)), "Should be power of 2 for const");
+
+  Node* mask;
+  if (addr->bottom_type()->basic_type() == T_INT) {
+	  Node* minus_one = transform_later(ConINode::make(-1));
+    Node* sz_minus  = transform_later(new AddINode(size, minus_one));
+    Node* add       = transform_later(new AddINode(addr, sz_minus));
+    mask            = transform_later(new AndINode(add, transform_later(new XorINode(minus_one, sz_minus))));
+  }else if (addr->bottom_type()->basic_type() == T_LONG) {
+	  Node* minus_one = transform_later(ConLNode::make(-1));
+	  Node* sz_minus  = transform_later(new AddLNode(size, minus_one));
+	  Node* add       = transform_later(new AddLNode(addr, sz_minus));
+	  mask            = transform_later(new AndLNode(add, transform_later(new XorLNode(minus_one, sz_minus))));
+  }else {
+	  ShouldNotReachHere();
+  }
+
+  return mask;
 }
 
 Node* PhaseMacroExpand::ConvI2L(Node* offset) {
